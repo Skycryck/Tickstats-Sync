@@ -67,8 +67,15 @@ the durable record.
 §7Detected stats files: §<color><count>
 §7PAT configured:       §<color>yes | no
 §7Repo reachability:    §<color>ok | failed | unknown <optional hint>
-§7Last outcome:         §<color><outcome> (attempts: <N>)
+§7Last outcome:         §<color><outcome> (trigger: <TRIGGER>, attempts: <N>) | none yet
 ```
+
+The `trigger` field on the last-outcome row is the
+`SyncOrchestrator.Trigger` enum value (`SCHEDULED`, `MANUAL`, or `STARTUP`)
+that kicked the most recent cycle, sourced from `SyncMetrics.lastTrigger` and
+mirroring the `trigger=<value>` field in the structured log line (R15).
+Before the first sync has run, the whole row renders as
+`§7Last outcome:         §enone yet` with no trigger or attempts parenthetical.
 
 **Response template (inert mode — config is invalid)**:
 
@@ -101,7 +108,7 @@ Healthy:
 §7Detected stats files: §a42
 §7PAT configured:       §ayes
 §7Repo reachability:    §aok (checked at last sync)
-§7Last outcome:         §aSUCCESS_WITH_COMMIT (attempts: 1)
+§7Last outcome:         §aSUCCESS_WITH_COMMIT (trigger: SCHEDULED, attempts: 1)
 ```
 
 Never-synced:
@@ -123,7 +130,7 @@ Broken PAT:
 §7Detected stats files: §a42
 §7PAT configured:       §ayes
 §7Repo reachability:    §cfailed (AUTH) - check server log
-§7Last outcome:         §cFAILURE (attempts: 3)
+§7Last outcome:         §cFAILURE (trigger: SCHEDULED, attempts: 1)
 ```
 
 Inert mode (invalid config after a bad `/tickstats reload`):

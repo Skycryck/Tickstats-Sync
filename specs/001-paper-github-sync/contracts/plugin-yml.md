@@ -14,7 +14,7 @@ through Paper's Brigadier Lifecycle API (see R1 in `research.md`).
 name: TickstatsSync
 version: ${project.version}
 main: com.skycryck.tickstatssync.TickstatsSyncPlugin
-api-version: "1.21"
+api-version: "26.1.2"
 load: POSTWORLD
 authors: [Skycryck]
 description: Automated Paper-to-GitHub stats sync for the Tickstats dashboard.
@@ -33,7 +33,7 @@ permissions:
 | `name` | `TickstatsSync` | Appears in `/plugins`, log prefixes, and plugin data folder name. |
 | `version` | `${project.version}` | Substituted by Gradle's `processResources` task from `build.gradle.kts`. |
 | `main` | `com.skycryck.tickstatssync.TickstatsSyncPlugin` | Java main class (extends `JavaPlugin`). |
-| `api-version` | `"1.21"` | Maximum compatibility across Paper 1.21.x (tested on 1.21.11 stable and 1.21.12 experimental per Technical Context). |
+| `api-version` | `"26.1.2"` | Pinned to the Paper 26.1.2 line per research R16. This value **gates plugin loading**: Paper servers older than 26.1.2 will refuse to load the plugin and log an explicit "api-version not satisfied" message to the server console. When Paper publishes 26.1.3 / 27.x and we re-test, the value is bumped in one commit. |
 | `load` | `POSTWORLD` | No world-listener dependency; post-world load is safe and defers onEnable past world startup. |
 | `authors` | `[Skycryck]` | Upstream Tickstats project owner. |
 | `permissions.tickstats.admin.default` | `op` | Matches constitution Principle VIII — admin-only by default. |

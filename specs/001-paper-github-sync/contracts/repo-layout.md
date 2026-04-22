@@ -5,8 +5,10 @@
 **Constitution reference**: Principle I (inviolable)
 
 The plugin writes exclusively into the following paths inside the target GitHub
-repository, at the configured `target_path` (default: repository root). No other
-paths are ever created, modified, or deleted by the plugin.
+repository, always anchored at the repository root under `stats/<server.name>/`.
+The in-repo target path is fixed by Tickstats convention and is NOT configurable
+— see the footnote in [plan.md](../plan.md) and [spec.md](../spec.md) FR-006 /
+FR-016. No other paths are ever created, modified, or deleted by the plugin.
 
 ## Path layout
 

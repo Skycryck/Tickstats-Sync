@@ -8,18 +8,19 @@ this phase.
 
 ---
 
-## R1 — Paper command registration idiom for 1.21.x
+## R1 — Paper command registration idiom for 26.x
 
 **Decision**: Register `/tickstats` through Paper's Brigadier-backed Lifecycle API
 (`LifecycleEvents.COMMANDS`), and declare only the permission node in `plugin.yml`.
 
-**Verified (2026-04-22) against Paper docs + Javadoc**:
+**Verified (2026-04-22) against Paper docs + Javadoc** (valid on the 26.x line;
+the lifecycle command API has been stable since it landed in 1.20.6 / 1.21.0):
 - `LifecycleEvents.COMMANDS` FQN: `io.papermc.paper.plugin.lifecycle.event.types.LifecycleEvents.COMMANDS`.
 - `JavaPlugin.getLifecycleManager()` returns
   `io.papermc.paper.plugin.lifecycle.event.LifecycleEventManager<Plugin>`.
 - `Commands` FQN: `io.papermc.paper.command.brigadier.Commands`. Every node's source
   type is `io.papermc.paper.command.brigadier.CommandSourceStack`.
-- Concrete registration sketch (compiles on 1.21.0 through 1.21.12):
+- Concrete registration sketch (compiles on Paper 26.x):
 
 ```java
 this.getLifecycleManager().registerEventHandler(LifecycleEvents.COMMANDS, event -> {
@@ -33,9 +34,11 @@ this.getLifecycleManager().registerEventHandler(LifecycleEvents.COMMANDS, event 
 });
 ```
 
-**Version caveat**: `Commands.restricted(Predicate)` was added in **Paper 1.21.6** —
-do NOT use it. Stick to the plain `.requires(Predicate<CommandSourceStack>)` form,
-which has been stable since the lifecycle command API landed in 1.20.6 / 1.21.0.
+**Version caveat**: `Commands.restricted(Predicate)` (added on the 1.21.x branch)
+is available on 26.x but we still prefer the plain
+`.requires(Predicate<CommandSourceStack>)` form for forward-portability across
+Paper releases and because `.requires` has been stable since the lifecycle
+command API landed in 1.20.6 / 1.21.0.
 
 **Rationale**:
 - Brigadier gives per-subcommand permission checks, clean argument validation, and
@@ -60,7 +63,9 @@ which has been stable since the lifecycle command API landed in 1.20.6 / 1.21.0.
 - https://docs.papermc.io/paper/dev/command-api/basics/registration
 - https://docs.papermc.io/paper/dev/command-api/basics/requirements
 - https://jd.papermc.io/paper/1.21.4/io/papermc/paper/plugin/lifecycle/event/types/LifecycleEvents.html
-- https://jd.papermc.io/paper/1.21.11/org/bukkit/plugin/java/JavaPlugin.html
+- https://jd.papermc.io/paper/ (26.x Javadoc index — use the current published
+  version at the time of onboarding; Paper's lifecycle command API is stable
+  across the 26.x line)
 
 ---
 
@@ -81,7 +86,7 @@ HTTPS-proxy behavior and because it respects `JAVA_HTTP(S)_PROXY` env vars via A
 HttpClient. Both artifacts are shaded and relocated.
 
 **Rationale for the 6.x line**:
-- JGit 6.x minimum is Java 11; runs cleanly on Java 21.
+- JGit 6.x minimum is Java 11; runs cleanly on Java 25.
 - Service release `6.10.1` (2025-05-22) is the latest 6.x; API-compatible with
   6.10.0.
 - Pinning an explicit version keeps shaded-JAR output reproducible.
@@ -98,7 +103,8 @@ JGit 7.x exists with notable improvements:
 | Multi-pack index work | no | yes (landed in 7.5.0) |
 | Security patches | CVE-2025-4949 included | includes all 6.x fixes |
 
-Because Paper 1.21 already requires Java 21, the "Java 17 minimum" in 7.x is free.
+Because Paper 26.x already requires Java 25, the "Java 17 minimum" in 7.x is
+trivially satisfied and not a constraint.
 
 **Arbitration (2026-04-22)**: this iteration stays on **JGit 6.10.1**. No jump to 7.x
 now. Migration to 7.x is explicitly envisaged as a **v2 follow-up** *only* if concrete
@@ -202,7 +208,7 @@ cron.
 **Rationale**:
 - Unix flavor matches operator muscle memory and the examples in `config.yml`
   (`0 */6 * * *`, `0 8,14,22 * * *`).
-- cron-utils 9.2.x is Java 11-compatible and runs on Java 21.
+- cron-utils 9.2.x is Java 11-compatible and runs on Java 25.
 - `nextExecution(ZonedDateTime)` returns zone-aware millisecond-precise next-fire;
   DST handling is deterministic (the library falls back to UTC offsets on ambiguous
   local times, never double-fires).
@@ -299,7 +305,14 @@ cycle. The check uses
 
 **Decision**: `CronScheduler` is a self-rescheduling async task. On each firing:
 
-1. Run the sync cycle (via `SyncOrchestrator.runOnce()`).
+1. Try to acquire `SyncLock`. If acquired, run the sync cycle (via
+   `SyncOrchestrator.runOnce(Trigger.SCHEDULED)` — the cron path always passes
+   `SCHEDULED`; `MANUAL` and `STARTUP` are passed by the command and bootstrap
+   call-sites respectively); if not acquired, emit a WARNING log
+   `Scheduled sync skipped: previous sync still running (held for <N>s)` and
+   proceed directly to step 2 — **the next scheduled firing is re-armed
+   regardless** of whether the cycle ran. There is no catch-up cycle and no
+   missed-occurrence queue.
 2. Compute next-fire from
    `executionTime.nextExecution(ZonedDateTime.now(zone)).orElseThrow(...)` — the
    library returns `Optional<ZonedDateTime>` (see R3); for a well-formed Unix
@@ -451,9 +464,9 @@ plugins {
 
 **Prerequisites of Shadow 9.4.1**:
 - **Gradle 9.0+** — see the Gradle wrapper subsection below for the exact pin.
-- **Java 17+** (runtime; satisfied by Paper 1.21's Java 21 requirement).
+- **Java 17+** (runtime; trivially satisfied by Paper 26.x's Java 25 requirement).
 - Shadow 9.4.1 also updated its embedded ASM / jdependency to handle Java 26 class
-  files — a nice-to-have if the project ever moves off Java 21 LTS.
+  files — useful headroom if the project ever moves off Java 25.
 
 ### Gradle wrapper version (arbitrated 2026-04-22)
 
@@ -510,7 +523,7 @@ hatch, should the need arise. No code or contract should assume it.
   behavior, since our scheduler code would throw `UnsupportedOperationException` on
   Folia anyway.
 - `README.md` MUST carry the line:
-  `Folia is not supported; targeting Paper 1.21.11+ and 1.21.12+ (latest experimental).`
+  `Folia is not supported. Targeting Paper 26.1.2+ (build #19 or later, JDK 25 required).`
 
 **Audience-mismatch justification**:
 TickstatsSync's target audience is Paper operators running ~10–100-player servers —
@@ -705,7 +718,7 @@ issue).
 **Pinned log line format**:
 
 ```
-[TickstatsSync] outcome=<OUTCOME> files=<N> commit=<sha7-or-none> duration_ms=<N> category=<CATEGORY-or-none> attempts=<N>
+[TickstatsSync] outcome=<OUTCOME> trigger=<TRIGGER> files=<N> commit=<sha7-or-none> duration_ms=<N> category=<CATEGORY-or-none> attempts=<N>
 ```
 
 Every field is always present; fields not applicable to the outcome use `none`:
@@ -713,6 +726,7 @@ Every field is always present; fields not applicable to the outcome use `none`:
 | Field | Always present? | Value when outcome applies | Value when not applicable |
 |-------|-----------------|----------------------------|---------------------------|
 | `outcome` | yes | `SUCCESS_WITH_COMMIT` / `SUCCESS_NO_CHANGES` / `FAILURE` | — (never empty) |
+| `trigger` | yes | one of `SCHEDULED` / `MANUAL` / `STARTUP` — the `SyncOrchestrator.Trigger` value that kicked the cycle | — (never empty) |
 | `files` | yes | count of files staged (or pushed) this cycle | `0` if nothing was read / written |
 | `commit` | yes | 7-char short SHA on `SUCCESS_WITH_COMMIT` | `none` otherwise |
 | `duration_ms` | yes | total wall-clock ms from cycle start to outcome | — (always present) |
@@ -722,16 +736,16 @@ Every field is always present; fields not applicable to the outcome use `none`:
 Example success lines:
 
 ```
-[TickstatsSync] outcome=SUCCESS_WITH_COMMIT files=42 commit=a1b2c3d duration_ms=812 category=none attempts=1
-[TickstatsSync] outcome=SUCCESS_NO_CHANGES files=42 commit=none duration_ms=124 category=none attempts=1
-[TickstatsSync] outcome=SUCCESS_WITH_COMMIT files=42 commit=e5f6a7b duration_ms=2348 category=none attempts=2
+[TickstatsSync] outcome=SUCCESS_WITH_COMMIT trigger=SCHEDULED files=42 commit=a1b2c3d duration_ms=812 category=none attempts=1
+[TickstatsSync] outcome=SUCCESS_NO_CHANGES trigger=SCHEDULED files=42 commit=none duration_ms=124 category=none attempts=1
+[TickstatsSync] outcome=SUCCESS_WITH_COMMIT trigger=MANUAL files=42 commit=e5f6a7b duration_ms=2348 category=none attempts=2
 ```
 
 Example failure lines:
 
 ```
-[TickstatsSync] outcome=FAILURE files=42 commit=none duration_ms=1532 category=AUTH attempts=3
-[TickstatsSync] outcome=FAILURE files=0 commit=none duration_ms=62 category=IO attempts=1
+[TickstatsSync] outcome=FAILURE trigger=SCHEDULED files=42 commit=none duration_ms=1532 category=AUTH attempts=3
+[TickstatsSync] outcome=FAILURE trigger=STARTUP files=0 commit=none duration_ms=62 category=IO attempts=1
 ```
 
 **Rationale for this format**:
@@ -752,6 +766,113 @@ Example failure lines:
 **Alternatives considered**:
 - Free-form error strings: harder to grep, breaks status UI.
 - HTTP-status-only categories: insufficient (filesystem errors have no HTTP status).
+
+---
+
+## R16 — Paper 26.1.2 pivot (supersedes earlier dual 1.21.x / 26.x targeting)
+
+**Decision**: Target **Paper 26.1.2 only**. Drop the earlier "1.21.11 stable +
+1.21.12/26.1.2 experimental" dual-track positioning. Build against
+`io.papermc.paper:paper-api:26.1.2.build.19` (strict pin — see
+"Deterministic-build pin" subsection below) on JDK 25, ship against
+`api-version: "26.1.2"`.
+
+**Motivations (explicitly traced)**:
+
+1. **Alignment with Paper's current versioning scheme**. Starting with the 26.x
+   line, Paper's Maven coordinate scheme drops the `-R0.1-SNAPSHOT` suffix and
+   uses `<mc-version>.build.<build-number>` directly (e.g.
+   `26.1.2.build.19`), matching the
+   Minecraft-version-equals-Paper-version convention documented in the Paper
+   project-setup guide. Staying on 1.21.x would anchor us to the legacy coordinate
+   scheme and a discontinued API surface.
+2. **Avoidance of a dual build matrix**. A 1.21.x + 26.x matrix would double the
+   CI cost (two `paper-api` versions, two test runs), fragment the `api-version`
+   declaration in `plugin.yml`, and require feature detection at runtime for
+   APIs that moved between the two lines. The plugin's feature surface is narrow
+   (stats read + git push + scheduler + 3 commands) and doesn't justify that tax.
+3. **Alignment with the maintainer's real test environment**. The maintainer's
+   own Paper server runs on 26.1.2 build #19. Test feedback matches deployment
+   reality, and smoke tests (T046) run on the exact target.
+
+**Deterministic-build pin (no `+` dynamic suffix)**:
+
+The paper-api coordinate is pinned strictly to
+`io.papermc.paper:paper-api:26.1.2.build.19` — no `+` dynamic suffix. Rationale:
+
+- **Reproducibility first.** A dynamic `+` suffix would let Gradle pick whatever
+  build the Paper repository happens to publish at resolution time, which means
+  a dev-local build and a CI build (or two CI builds minutes apart) can silently
+  diverge. Shaded JARs would differ in Paper-API bytecode without any code
+  change in this project. That's the opposite of what a release pipeline needs.
+- **Conscious bumps only.** Paper publishes frequent 26.1.2 builds; most of
+  them don't affect TickstatsSync's narrow API surface (stats read +
+  `Bukkit.getScheduler()` + `LifecycleEvents.COMMANDS` + `JavaPlugin`). Bumping
+  the pin is a deliberate act: read the
+  [PaperMC release notes](https://github.com/PaperMC/Paper/releases) for every
+  published build between the current pin and the candidate new pin, confirm
+  none of them touch the APIs we depend on (or that the change is desired),
+  update the single `build.gradle.kts` line, and re-run the T046 smoke + T046a
+  `generate.py` verification before shipping.
+- **No auto-upgrade surprises.** If Paper publishes a 26.1.2 build that
+  regresses the lifecycle command API or changes `getLifecycleManager()`'s
+  signature, dynamic resolution would break our build on the next `./gradlew
+  build` with no local change. A strict pin isolates us until we opt in.
+
+The tradeoff — occasional manual review — is acceptable because builds are
+published on a cadence slower than our release cadence. Operators who want the
+absolute latest Paper can always keep their server build current; the plugin's
+`api-version: "26.1.2"` floor remains compatible with every 26.1.2 build (and
+forward to 26.1.3+ by policy; see "api-version consequences" below).
+
+**JDK 25 requirement (build + runtime)**:
+
+- Paper 26.x's compiled bytecode targets Java 25, so both the build toolchain
+  and the runtime JRE MUST be JDK 25 or higher.
+- The Gradle wrapper provisions JDK 25 automatically via the
+  `org.gradle.toolchains.foojay-resolver-convention` plugin, which MUST be
+  enabled in `settings.gradle.kts`:
+
+  ```kotlin
+  plugins {
+      id("org.gradle.toolchains.foojay-resolver-convention") version "0.8.0"
+  }
+  ```
+
+  The `java` block in `build.gradle.kts` then declares:
+
+  ```kotlin
+  java {
+      toolchain {
+          languageVersion.set(JavaLanguageVersion.of(25))
+      }
+  }
+  ```
+
+  Contributors without JDK 25 on their PATH get it auto-downloaded through
+  foojay on first build. Those behind corporate proxies that block foojay MUST
+  install JDK 25 manually (Temurin, Azul Zulu, Liberica — any vendor works).
+
+**`api-version: "26.1.2"` consequences**:
+
+- Paper refuses to load the plugin on servers older than 26.1.2 with a clear
+  console message. This is the intended behavior: we cannot test every legacy
+  Paper build, so we hard-gate on the known-good line.
+- When Paper publishes 26.1.3 (or 27.x), the plugin can be re-tested and
+  re-shipped with a bumped `api-version`; until that happens, 26.1.2 is the
+  authoritative floor.
+
+**Sources**:
+- https://docs.papermc.io/paper/dev/project-setup/ (coordinate scheme + api-version)
+- https://github.com/PaperMC/Paper (README, 26.x branch)
+- https://docs.gradle.org/current/userguide/toolchains.html
+- https://github.com/gradle/foojay-toolchains
+
+**Supersedes**: all earlier references to 1.21.11, 1.21.12, and "dual Paper
+targeting" in R1, R2, R10 (Folia disclaimer wording), and the plan's Technical
+Context. Those sections have been edited in place. Any residual mention of
+1.21.x in this research document is preserved only for historical API caveats
+(e.g., when an API landed on 1.21.x before being carried into 26.x).
 
 ---
 
