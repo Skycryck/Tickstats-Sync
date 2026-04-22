@@ -1,0 +1,47 @@
+# ---- Build artifacts ----
+build/
+.gradle/
+out/
+*.jar
+!gradle/wrapper/gradle-wrapper.jar
+
+# ---- IDEs ----
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.fleet/
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- Java / JVM ----
+*.class
+hs_err_pid*.log
+replay_pid*.log
+
+# ---- Tests / coverage ----
+.gradle-test-kit/
+.coverage/
+
+# ---- TickstatsSync runtime ----
+plugins/TickstatsSync/workdir/
+test-server/
+server/
+world/
+world_nether/
+world_the_end/
+
+# ---- Secrets ----
+config.yml
+!src/main/resources/config.yml
+.env
+*.pem
+*.key
+
+# ---- Spec-kit ----
+.specify/.cache/
+.specify/tmp/
