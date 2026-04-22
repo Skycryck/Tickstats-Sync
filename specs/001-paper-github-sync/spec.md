@@ -163,8 +163,8 @@ output: the PAT value itself must not appear.
 ### User Story 5 - Hot-Reload Configuration (Priority: P3)
 
 As an operator, I want `/tickstats reload` to apply changes to `config.yml` without
-restarting the server, so I can tweak cadence, change target paths, or rotate the PAT
-without dropping players.
+restarting the server, so I can tweak cadence, change the source stats path, or
+rotate the PAT without dropping players.
 
 **Why this priority**: A Minecraft restart is disruptive. Hot-reload is a critical
 operator convenience, especially for PAT rotation and cadence tuning.
@@ -196,8 +196,8 @@ operator convenience, especially for PAT rotation and cadence tuning.
   stats files found", creates no commit.
 - **Target repository exists but is empty (no branches, no commits)**: Plugin
   initializes the target branch with a first commit containing the stats.
-- **Configured target path does not yet exist in the repository**: Plugin creates
-  intermediate directories on first sync.
+- **Target repository is missing the `stats/<server-name>/` tree on first sync**:
+  Plugin creates the intermediate directories on first sync.
 - **Remote branch advanced between local commit and push (push conflict)**: Plugin
   fetches the remote tip and attempts to integrate its own commits (rebase or merge).
   If still conflicting, the cycle aborts and the next scheduled tick retries from a
@@ -247,8 +247,9 @@ operator convenience, especially for PAT rotation and cadence tuning.
 - **FR-005**: System MUST read player stats files from the source path (default
   `world/stats`) as read-only.
 - **FR-006**: System MUST write each stats file verbatim to
-  `stats/<server-name>/data/<uuid>.json` under the configured target path in the
-  target repository.
+  `stats/<server-name>/data/<uuid>.json` at the root of the target repository. The
+  target path inside the repository is fixed by Tickstats convention and is NOT
+  configurable — `generate.py` expects this exact layout.
 - **FR-007**: System MUST NOT transform, reformat, enrich, or otherwise alter the
   JSON contents — bytes in equal bytes out.
 - **FR-008**: System MUST, on the first sync of each local calendar day (configured
@@ -284,11 +285,25 @@ operator convenience, especially for PAT rotation and cadence tuning.
 
 **Configuration and hot-reload**
 
-- **FR-016**: `config.yml` MUST expose at minimum the following keys:
-  `github.owner`, `github.repo`, `github.branch` (default `main`),
-  `github.target_path`, `github.pat`, `git.author_name`, `git.author_email`,
-  `server_name`, `schedule.cron`, `schedule.timezone` (default `Europe/Paris`),
-  `snapshots.enabled` (default `true`), `source.stats_path` (default `world/stats`).
+- **FR-016**: `config.yml` MUST expose at minimum the following keys, using
+  YAML kebab-case for multi-word names (consistent with Paper/Bukkit
+  conventions — e.g., `commit-author-name`, never `commit_author_name` or
+  `commitAuthorName`):
+  `github.repo` (combined `owner/name` form, e.g. `Skycryck/mc-server-stats`),
+  `github.branch` (default `main`),
+  `github.token` (may be empty if `TICKSTATSSYNC_GITHUB_TOKEN` env var is set),
+  `github.commit-author-name`,
+  `github.commit-author-email`,
+  `server.name`,
+  `server.stats-path` (default `world/stats`),
+  `sync.cron`,
+  `sync.timezone` (default `Europe/Paris`),
+  `sync.sync-on-startup` (default `false`),
+  `sync.snapshots-enabled` (default `true`),
+  `retry.max-attempts` (default `3`),
+  `retry.initial-backoff-seconds` (default `10`).
+  The target path inside the GitHub repository is fixed by Tickstats convention
+  (`stats/<server.name>/…`) and is NOT exposed as a config key.
 - **FR-017**: On first startup with no `config.yml` present, the plugin MUST write a
   commented default template in English and refuse to sync until the file is edited
   into a valid state.
@@ -377,8 +392,8 @@ operator convenience, especially for PAT rotation and cadence tuning.
   server, produced by the first successful sync of that day (in the configured
   timezone) that finds no existing directory for today.
 - **Plugin Configuration**: The parsed and validated content of `config.yml`. Carries
-  target repository coordinates, credentials, schedule, author identity, source and
-  target paths, and feature toggles. Hot-reloadable.
+  target repository coordinates, credentials, schedule, author identity, source
+  stats path, and feature toggles. Hot-reloadable.
 - **Sync Schedule**: A cron expression plus a timezone, interpreted against the
   configured timezone's wall clock, producing a stream of future firing times.
 - **Credentials**: The GitHub Personal Access Token and commit author identity. The

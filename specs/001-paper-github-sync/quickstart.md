@@ -2,8 +2,12 @@
 
 **Audience**: A Paper server operator installing TickstatsSync for the first time.
 **Time to first successful sync**: ~10 minutes.
-**Prerequisites**: a running Paper 1.21.x server, a GitHub account, operator (op)
-access on the server.
+**Prerequisites**: a running Paper **26.1.2** server (build #19 or later, JDK 25
+runtime), a GitHub account, operator (op) access on the server. Older Paper
+releases refuse to load the plugin because `plugin.yml` declares
+`api-version: "26.1.2"`. To build from source you also need JDK 25 on your PATH
+(or trust the Gradle wrapper to auto-provision it via foojay — see the
+project README).
 
 ---
 
@@ -173,6 +177,51 @@ created), not on the Minecraft server:
 Plugin side: nothing else to configure. The file-layout contract documented in
 `contracts/repo-layout.md` is all `generate.py` needs.
 
+### 8.1 Verification procedure (run this once before shipping — powers task T046a)
+
+Before declaring a release ready, run `generate.py` locally against the data the
+plugin actually produced. This verifies SC-002 (the Tickstats producer contract
+is honoured end-to-end). This is **not** optional for maintainers cutting a
+release — it is the gate that catches layout regressions before users see them:
+
+1. Trigger one real sync cycle against a disposable GitHub repo (either wait for
+   a scheduled tick or run `/tickstats sync`). Verify in a browser that
+   `stats/<server-name>/data/<uuid>.json` and
+   `stats/<server-name>/snapshots/YYYY-MM-DD/<uuid>.json` landed.
+2. Clone the upstream Tickstats repo into a scratch directory:
+   ```bash
+   git clone https://github.com/Skycryck/tickstats /tmp/tickstats-check
+   cd /tmp/tickstats-check
+   ```
+3. Install `generate.py`'s Python requirements (a venv keeps your system
+   interpreter clean):
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate     # on Windows: .venv\Scripts\Activate.ps1
+   pip install -r requirements.txt
+   ```
+4. Clone the stats repo the plugin just pushed to, into a sibling directory, so
+   `generate.py` sees it as a local path:
+   ```bash
+   git clone https://github.com/<your-username>/mc-server-stats /tmp/mc-stats-check
+   ```
+5. Run `generate.py` against that stats directory and inspect the exit code and
+   output:
+   ```bash
+   python generate.py --stats-dir /tmp/mc-stats-check/stats
+   echo "exit code: $?"
+   ```
+6. Pass criteria:
+   - exit code is `0`;
+   - no tracebacks or `ERROR` log lines;
+   - the generated dashboard HTML opens in a browser without broken layout or
+     JavaScript console errors;
+   - at least one data row per UUID present in `stats/<server-name>/data/`.
+7. If `generate.py` fails, stop — the plugin's output has drifted from the
+   Tickstats producer contract (Principle I). File the discrepancy as a
+   regression against [contracts/repo-layout.md](contracts/repo-layout.md)
+   before shipping.
+
 ---
 
 ## 9. Routine operations
@@ -194,7 +243,7 @@ Plugin side: nothing else to configure. The file-layout contract documented in
 | `/tickstats status` shows `Repo reachability: failed (AUTH)` | Token expired or missing scope. Mint a fresh fine-grained PAT with `Contents: Read and write`. |
 | `Reload failed: target repository not reachable` | `github.repo` typo, private repo without collaborator, or token revoked. |
 | `Sync failed (NETWORK). See server log for details.` | Transient — wait for next cron tick or check outbound HTTPS. |
-| Nothing is being committed even though players are playing | Check `snapshots-enabled`, check cron expression in `config.yml`, check `sync.timezone`. |
+| Nothing is being committed even though players are playing | Check `sync.snapshots-enabled`, check `sync.cron` expression in `config.yml`, check `sync.timezone`. |
 | Log lines look garbled | The plugin emits UTF-8. Ensure your terminal / log viewer renders UTF-8. |
 
 For anything else, read `plugins/TickstatsSync/logs/` (if present) or the main server

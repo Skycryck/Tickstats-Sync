@@ -14,13 +14,19 @@ calendar day, and stays entirely off the main server thread.
 
 Technical approach (from user-provided stack + clarifications):
 
-- Java 21 + **Gradle 9.4.1** (Kotlin DSL, pinned in
+- Java 25 + **Gradle 9.4.1** (Kotlin DSL, pinned in
   `gradle/wrapper/gradle-wrapper.properties`) + `com.gradleup.shadow:9.4.1` to ship
-  one relocated fat JAR. The Gradle 9.x target is a conscious alignment with the
-  active Shadow toolchain; rollback to Gradle 8.14.x + Shadow 8.3.x is documented in
-  research R9 as a one-commit escape hatch, but is not the default path.
-- Paper API 1.21 (`api-version: "1.21"`), tested against 1.21.11 stable and 1.21.12
-  experimental.
+  one relocated fat JAR. JDK 25 is required both at build time and at runtime
+  because Paper 26.x runs on Java 25 (see research R16). The Gradle 9.x target is
+  a conscious alignment with the active Shadow toolchain; rollback to Gradle
+  8.14.x + Shadow 8.3.x is documented in research R9 as a one-commit escape hatch,
+  but is not the default path.
+- Paper API **26.1.2** (`api-version: "26.1.2"`), pinned strictly to
+  `io.papermc.paper:paper-api:26.1.2.build.19`. No `+` dynamic suffix — the pin
+  keeps dev-local and CI builds bit-identical; manual bumps are made consciously
+  after reading the PaperMC release notes. There is no dual 1.21.x / 26.x build
+  matrix — the pivot rationale and Paper's `<Minecraft-version>` =
+  `<Paper-version>` coordinate convention are documented in research R16.
 - Embedded JGit (`org.eclipse.jgit` + `org.eclipse.jgit.http.apache`) for all git
   operations: clone once at first startup as
   `git clone --depth=1 --single-branch --branch=<config branch>` into
@@ -43,19 +49,21 @@ Technical approach (from user-provided stack + clarifications):
   `tickstats.admin`.
 - Concurrent-invocation rejection (FR-003a) is enforced by a single `SyncLock` that
   records the start `Instant` of the in-flight cycle. `/tickstats sync` rejects with
-  `A sync is already in progress (started <N>s ago). Try again in a moment.`; the
-  scheduler skips with a WARNING log `Scheduled sync skipped: previous sync still
-  running (held for <N>s)` and does not reschedule — the next cron occurrence fires
-  normally. The lock is released in a strict `finally` block around the full cycle.
+  `A sync is already in progress (started <N>s ago). Try again in a moment.`; on
+  skip, the scheduler emits a WARNING log `Scheduled sync skipped: previous sync
+  still running (held for <N>s)`, **re-arms the next scheduled firing** via
+  `runTaskLaterAsynchronously`, and does NOT queue a catch-up cycle. The lock is
+  released in a strict `finally` block around the full cycle.
 - The project `README.md` documents setup in the same fine-grained-first hierarchy
   used in [contracts/config-schema.md](contracts/config-schema.md): fine-grained PAT
   as the primary procedure, classic PAT in a secondary "Alternative for
   organizations without fine-grained PAT support" section with the dedicated-bot +
   Write-role (not Admin) warning. The `README.md` MUST also carry a prominent
   compatibility line near the top:
-  `Folia is not supported; targeting Paper 1.21.11+ and 1.21.12+ (latest experimental).`
+  `Folia is not supported. Targeting Paper 26.1.2+ (build #19 or later, JDK 25 required).`
   This sectioning and disclaimer line are a contract that authoring tasks in
-  `/speckit.tasks` MUST follow.
+  `/speckit.tasks` MUST follow. The exact disclaimer (post-26.1.2 pivot) is:
+  `Folia is not supported. Targeting Paper 26.1.2+ (build #19 or later, JDK 25 required).`
 - On `onEnable()` with an invalid `config.yml`, the plugin stays **enabled-but-inert**:
   it registers its commands, `/tickstats reload` remains operational as the escape
   hatch, `/tickstats status` renders a red `⚠ config invalid: <reason>` banner at
@@ -94,11 +102,14 @@ MUST reject it.
 
 ## Technical Context
 
-**Language/Version**: Java 21 (LTS), required by Paper 1.21.x and 1.21.12/build
-26.1.2 experimental.
+**Language/Version**: Java 25, required by Paper 26.x. The Gradle toolchain block
+pins JDK 25; wrapper provisioning goes through the
+`org.gradle.toolchains.foojay-resolver-convention` plugin in `settings.gradle.kts`
+so contributors don't have to install JDK 25 manually. See research R16.
 **Primary Dependencies**:
-- `io.papermc.paper:paper-api:1.21.11-R0.1-SNAPSHOT` (compile-only, provided by
-  the server)
+- `io.papermc.paper:paper-api:26.1.2.build.19` (compile-only, provided by the
+  server; **strict pin**, no `+` dynamic suffix — see research R16 for the
+  deterministic-build rationale)
 - `org.eclipse.jgit:org.eclipse.jgit:6.10.1.202505221210-r` +
   `org.eclipse.jgit.http.apache:6.10.1.202505221210-r` (shaded, relocated; includes
   CVE-2025-4949 fix — see research R2)
@@ -122,13 +133,12 @@ MUST reject it.
   next-fire computation against known-good cases.
 - In-process integration test for `ConfigService`: drive through valid and invalid
   YAML fixtures.
-- Manual smoke test: Paper 1.21.11 local server + a disposable GitHub repo (see
-  `quickstart.md`).
+- Manual smoke test: Paper 26.1.2 (build #19 or later) local server + a disposable
+  GitHub repo (see `quickstart.md`).
 
-**Target Platform**: Paper server running on Java 21 (Linux/Windows/macOS host). Tests
-target two Paper versions:
-1. Paper 1.21.11 (latest stable at time of writing)
-2. Paper 1.21.12 build 26.1.2 (experimental track)
+**Target Platform**: Paper 26.1.2 server running on Java 25 (Linux/Windows/macOS
+host). A single Paper target is supported — there is no dual 1.21.x / 26.x build
+matrix (see research R16 for the pivot rationale).
 
 **Project Type**: Single Gradle project — server-side Minecraft plugin (distributed as
 one shaded JAR).
@@ -167,11 +177,11 @@ Checked against [.specify/memory/constitution.md](../../.specify/memory/constitu
 | III | Declarative, Hot-Reloadable Configuration | ✅ Pass | `ConfigService.load()` validates the full YAML on boot and on `/tickstats reload`, producing an immutable `TickstatsSyncConfig`. Reload is atomic: either the new config fully validates and becomes active, or the old config stays in place with a specific error message to the operator. |
 | IV | Credential Safety | ✅ Pass | `PatMasker` + `LogRedactionFilter` (a `java.util.logging.Filter` installed on the plugin's root logger at the first statement of `onEnable`) redact the PAT out of every JUL record — including JGit's own logger output — before publication. Git operations use `UsernamePasswordCredentialsProvider` with an opaque token; JGit never logs it. No author discipline is required: the filter catches every emission from any caller. |
 | V | Pragmatic Observability | ✅ Pass | `SyncOrchestrator` emits one structured log line per cycle outcome (timestamp, outcome, file count, commit SHA on success, duration ms, failure category on failure). `/tickstats status` reads atomic snapshots of metrics maintained by the orchestrator. |
-| VI | Resilience To Transient Failures | ✅ Pass | Retry loop in `SyncOrchestrator`: up to `retry.max-attempts` (default 3) with exponential backoff starting at `retry.initial-backoff-seconds` (default 10). Scheduler reschedules regardless of outcome. All exceptions are caught at the orchestrator boundary; none escape to kill the scheduler. |
+| VI | Resilience To Transient Failures | ✅ Pass | Retry loop in `SyncOrchestrator` is **branched by `FailureCategory`**: `NETWORK`, `CONFLICT`, and `IO` retry up to `retry.max-attempts` (default 3) with exponential backoff starting at `retry.initial-backoff-seconds` (default 10); `AUTH` and any non-transient `UNKNOWN` abandon immediately at attempt 1 with a specific log line (`giving up immediately — non-transient failure, check your PAT and repo configuration`). Scheduler reschedules regardless of outcome. All exceptions are caught at the orchestrator boundary; none escape to kill the scheduler. |
 | VII | Sync Idempotence | ✅ Pass | After writing all files into the working copy, `GitService.hasChanges()` invokes `git.status()` on the tracked paths. If clean, commit/push is skipped and the cycle ends as `success-no-changes`. |
 | VIII | Explicit Permissions | ✅ Pass | `plugin.yml` declares the `tickstats.admin` permission node with `default: op`. Commands are registered through Paper's Brigadier `LifecycleEvents.COMMANDS` (not via a `commands:` block in `plugin.yml`), and every subcommand node carries a `.requires(source -> source.getSender().hasPermission("tickstats.admin"))` gate. Non-admin senders see the server's generic "Unknown or incomplete command" response — Brigadier hides the subcommand from tab-completion and rejects invocation. |
-| IX | Deployment Simplicity | ✅ Pass | Single shaded JAR via `com.gradleup.shadow`. JGit + cron-utils relocated under `com.skycryck.tickstatssync.shaded.*`. No external CLI tools required. Default `config.yml` written on first boot. |
-| X | Tickstats Convention Alignment | ✅ Pass | Default `schedule.timezone = Europe/Paris`. Snapshot dirs named `YYYY-MM-DD`. Commit messages follow `Update stats for <server-name> — YYYY-MM-DD HH:mm` in English. |
+| IX | Deployment Simplicity | ✅ Pass | Single shaded JAR via `com.gradleup.shadow`. JGit + cron-utils + Apache HttpClient + slf4j + Bouncy Castle are all relocated under `com.skycryck.tickstatssync.shaded.*`. **SnakeYAML is intentionally NOT shaded** — Paper 26.x ships SnakeYAML 2.x on its own classpath and exposes it through the Bukkit `FileConfiguration` API, so the "YAML parser" dependency in Principle IX is satisfied by the Paper runtime the plugin already requires. Shading SnakeYAML on top would duplicate 300 KB of classes, risk split-classloader weirdness when Paper's and ours resolve the same class name, and produce no operator-visible benefit. The constitutional spirit ("operator drops one JAR, nothing else to install") is preserved: the operator still drops exactly one JAR; the YAML parser it depends on is already present on every Paper server by definition. No external CLI tools required. Default `config.yml` written on first boot. |
+| X | Tickstats Convention Alignment | ✅ Pass | Default `sync.timezone = Europe/Paris`. Snapshot dirs named `YYYY-MM-DD`. Commit messages follow `Update stats for <server-name> - YYYY-MM-DD HH:mm` (ASCII hyphen-minus `-`, not em-dash — see [contracts/repo-layout.md](contracts/repo-layout.md)) in English. |
 | XI | English-Only Code And Artifacts | ✅ Pass | All source, Javadoc, class/method/field names, log lines, in-game messages, commit messages, `config.yml` keys/comments, and `README.md` authored in English. PR review gate catches drift. |
 
 **No violations.** Complexity Tracking table left empty below.
@@ -275,7 +285,7 @@ the package level.
 
 ### Assumptions (planning-level)
 
-- **SnakeYAML 2.x is provided by Paper runtime.** Paper 1.21.x bundles SnakeYAML 2.x,
+- **SnakeYAML 2.x is provided by Paper runtime.** Paper 26.x bundles SnakeYAML 2.x,
   which uses `SafeConstructor` by default and rejects non-safe tags such as
   `!!java.net.URL`. The plugin depends on this via Paper's `FileConfiguration` API
   without shading SnakeYAML itself. `ConfigServiceTest` carries an
@@ -292,3 +302,18 @@ the package level.
 | Violation | Why Needed | Simpler Alternative Rejected Because |
 |-----------|------------|-------------------------------------|
 | _(none)_ | — | — |
+
+---
+
+### Footnote — Target path is not configurable
+
+The path inside the target GitHub repository where stats land is **fixed by
+Tickstats convention** at `stats/<server.name>/…` (`data/` and `snapshots/…`).
+No `github.target-path` or `github.target_path` key exists in `config.yml`, and
+`TickstatsSyncConfig` carries no `targetPath` field. `GitService.writeFiles`
+writes directly under the repository root. If a future user needs a custom
+target (e.g., to colocate multiple Tickstats feeds in one repository under
+different prefixes), it would be a v2 feature and would require a constitution
+amendment to Principle I. The current layout guarantee (see
+[contracts/repo-layout.md](contracts/repo-layout.md)) is load-bearing for
+upstream `generate.py`.

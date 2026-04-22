@@ -72,8 +72,8 @@ logged.
 
 ### Cycle state (local variables, no class)
 
-`SyncOrchestrator.runOnce()` tracks per-cycle state in **local variables**, not a
-dedicated class. The variables are approximately:
+`SyncOrchestrator.runOnce(Trigger trigger)` tracks per-cycle state in **local
+variables**, not a dedicated class. The variables are approximately:
 
 ```java
 Instant startedAt = clock.instant();
@@ -84,12 +84,32 @@ ObjectId commitSha = null;
 int attempts = 0;
 SyncOutcome outcome;
 FailureCategory failureCategory = null;
+// `trigger` is the method parameter (see Trigger enum below); passed through to
+// the R15 log line (`trigger=<value>`) and to SyncMetrics.lastTrigger on every
+// terminal state so /tickstats status can render "Last sync trigger: MANUAL".
 ```
 
 No `SyncCycle` class is created — the state lives only for the duration of the
 method and never leaks to another thread.
 
-**State transitions** inside `runOnce()`:
+### `Trigger` (enum nested on `SyncOrchestrator`)
+
+```java
+public enum Trigger {
+    SCHEDULED,   // cron-driven firing from CronScheduler
+    MANUAL,      // operator invocation via /tickstats sync
+    STARTUP      // one-shot firing at onEnable when syncOnStartup=true
+}
+```
+
+Declared as a nested enum on `SyncOrchestrator` so call-sites read
+`SyncOrchestrator.Trigger.MANUAL`. Consumed by: the R15 log line
+(`trigger=<value>` field, always present), `SyncMetrics.lastTrigger` (atomic,
+written at terminal state), and `/tickstats status` (renders as
+`Last sync trigger: <value>` on the outcome line — see
+[contracts/commands.md](contracts/commands.md)).
+
+**State transitions** inside `runOnce(Trigger trigger)`:
 
 ```
   STARTED
@@ -148,6 +168,7 @@ public final class SyncMetrics {
     private final AtomicReference<SyncOutcome> lastOutcome = new AtomicReference<>();
     private final AtomicReference<FailureCategory> lastFailureCategory = new AtomicReference<>();
     private final AtomicInteger lastAttempts = new AtomicInteger(0);
+    private final AtomicReference<SyncOrchestrator.Trigger> lastTrigger = new AtomicReference<>();
 
     public enum Reachability { OK, FAILED, UNKNOWN }
 
@@ -199,10 +220,12 @@ production it is `Clock.systemUTC()`.
    - On `true`: the cycle runs normally.
    - On `false`: the scheduler emits a WARNING-level log line
      `Scheduled sync skipped: previous sync still running (held for <N>s)`, does NOT
-     force a re-run, does NOT alter the schedule. The next scheduled cron occurrence
-     fires normally.
+     force a re-run, does NOT queue a catch-up cycle — and **re-arms the next
+     scheduled firing** via `runTaskLaterAsynchronously` (the self-rescheduling
+     one-shot model requires arming the next occurrence in both branches, else the
+     scheduler dies silently). See research R6 for the full decision.
 
-**Release discipline**: `SyncOrchestrator.runOnce()` MUST wrap its entire cycle —
+**Release discipline**: `SyncOrchestrator.runOnce(Trigger trigger)` MUST wrap its entire cycle —
 including read, fetch, write, commit, push, retry loop — in a single try/finally.
 The `finally` block unconditionally calls `lock.release()`, even if the thread was
 interrupted, even if an unchecked exception escaped the cycle. This is a
