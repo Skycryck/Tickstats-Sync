@@ -1,0 +1,12 @@
+github:
+  repo: "owner/repo-name"
+  token: "ghp_minimalPlaceholderTokenValue1234567890"
+  commit-author-name: "TickstatsSync Bot"
+  commit-author-email: "tickstatssync@example.com"
+
+server:
+  name: "my-server"
+  stats-path: "@STATS_PATH@"
+
+sync:
+  cron: "0 */6 * * *"

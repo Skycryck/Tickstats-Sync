@@ -22,6 +22,7 @@ desktop.ini
 *.class
 hs_err_pid*.log
 replay_pid*.log
+*.log
 
 # ---- Tests / coverage ----
 .gradle-test-kit/
