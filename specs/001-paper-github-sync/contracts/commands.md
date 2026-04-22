@@ -32,11 +32,16 @@ level — the cron schedule is unchanged and resumes normally on the next occurr
 |----------|-------------------|
 | Accepted, queued on async thread | `§a[TickstatsSync] Sync started.` |
 | Rejected: sync already running | `§e[TickstatsSync] A sync is already in progress (started <N>s ago). Try again in a moment.` |
-| Post-sync success (commit) | `§a[TickstatsSync] Sync complete: pushed <N> file(s), commit <sha7>, <ms> ms.` |
+| Rejected: config invalid (inert mode) | `§c[TickstatsSync] Configuration is invalid (<reason>). Edit config.yml and run /tickstats reload.` |
+| Post-sync success with commit (one attempt) | `§a[TickstatsSync] Sync complete: pushed <N> file(s), commit <sha7>, <ms> ms.` |
+| Post-sync success with commit (multiple attempts) | `§a[TickstatsSync] Sync complete after <K> attempts: pushed <N> file(s), commit <sha7>, <ms> ms.` |
 | Post-sync success (no changes) | `§a[TickstatsSync] Sync complete: no changes since last sync.` |
-| Post-sync transient failure → retry succeeded | `§a[TickstatsSync] Sync complete after <K> retry attempts: pushed <N> file(s).` |
-| Post-sync abandoned | `§c[TickstatsSync] Sync failed (<category>). See server log for details.` |
+| Post-sync failure | `§c[TickstatsSync] Sync failed (<category>) after <K> attempts. See server log for details.` |
 | Non-admin sender | Default Brigadier "Unknown or incomplete command" response (Paper default; not emitted by us). |
+
+The post-sync messages use the three-variant `SyncOutcome` taxonomy
+(`SUCCESS_WITH_COMMIT`, `SUCCESS_NO_CHANGES`, `FAILURE`) plus the separate
+`attempts` count — retried-then-succeeded is still a success with `attempts > 1`.
 
 The post-sync messages are delivered to the original command sender when they are
 still online. If the sender has logged out by the time the sync finishes, the
@@ -53,7 +58,7 @@ the durable record.
 
 **Arguments**: none.
 
-**Response template**:
+**Response template (healthy mode)**:
 
 ```
 §6TickstatsSync §7v<version>
@@ -62,8 +67,22 @@ the durable record.
 §7Detected stats files: §<color><count>
 §7PAT configured:       §<color>yes | no
 §7Repo reachability:    §<color>ok | failed | unknown <optional hint>
-§7Last outcome:         §<color><outcome>
+§7Last outcome:         §<color><outcome> (attempts: <N>)
 ```
+
+**Response template (inert mode — config is invalid)**:
+
+```
+§6TickstatsSync §7v<version>
+§c⚠ config invalid: <reason>
+§7Edit plugins/TickstatsSync/config.yml and run §b/tickstats reload§7.
+§7Last successful sync: §<color><timestamp with tz> | never
+§7Detected stats files: §<color><count>
+```
+
+In inert mode the "Next scheduled sync" row is omitted because no cron task is
+armed. `Last successful sync` still reports the previous healthy state (if any) so
+the operator knows how stale the data is.
 
 **Color semantics**:
 - `§a` (green) for healthy values (successful sync, next scheduled in future, PAT
@@ -82,7 +101,7 @@ Healthy:
 §7Detected stats files: §a42
 §7PAT configured:       §ayes
 §7Repo reachability:    §aok (checked at last sync)
-§7Last outcome:         §aSUCCESS_WITH_COMMIT
+§7Last outcome:         §aSUCCESS_WITH_COMMIT (attempts: 1)
 ```
 
 Never-synced:
@@ -103,8 +122,17 @@ Broken PAT:
 §7Next scheduled sync:  §a2026-04-22 20:00:00 (Europe/Paris)
 §7Detected stats files: §a42
 §7PAT configured:       §ayes
-§7Repo reachability:    §cfailed (AUTH) — check server log
-§7Last outcome:         §cABANDONED_FAILURE
+§7Repo reachability:    §cfailed (AUTH) - check server log
+§7Last outcome:         §cFAILURE (attempts: 3)
+```
+
+Inert mode (invalid config after a bad `/tickstats reload`):
+```
+§6TickstatsSync §7v1.0.0
+§c⚠ config invalid: sync.cron is not a valid Unix cron expression
+§7Edit plugins/TickstatsSync/config.yml and run §b/tickstats reload§7.
+§7Last successful sync: §a2026-04-21 14:00:03 (Europe/Paris)
+§7Detected stats files: §a42
 ```
 
 **Invariants**:
@@ -127,16 +155,25 @@ Broken PAT:
 
 | Scenario | Response template |
 |----------|-------------------|
-| Config parsed + validated + reachability probe passed | `§a[TickstatsSync] Configuration reloaded. Next sync: <timestamp with tz>.` |
+| Config parsed and validated (local shape only) | `§a[TickstatsSync] Configuration reloaded. Next sync: <timestamp with tz>.` |
 | Config parsed but validation failed | `§c[TickstatsSync] Reload failed: <specific error>. Previous configuration still active.` |
-| Config validated but reachability probe failed | `§c[TickstatsSync] Reload failed: target repository not reachable (<category>). Previous configuration still active.` |
+| Config was previously invalid and the reload fixed it (recovering from inert mode) | `§a[TickstatsSync] Configuration reloaded - plugin is now active. Next sync: <timestamp with tz>.` |
 | Non-admin sender | Default Brigadier "Unknown or incomplete command" response. |
 
 **Invariants**:
-- The previously-active configuration stays in force on any failure (FR-019).
+- The previously-active configuration stays in force on any validation failure
+  (FR-019).
 - An in-flight sync at reload time completes under the old config; the new config
   applies to the next scheduled tick (FR-020).
 - The PAT is not echoed in any response — only the binary outcome.
+- **Reload ordering**: on successful validation, `PatMasker.setToken(newToken)` is
+  called BEFORE the active `TickstatsSyncConfig` reference is swapped, so no log
+  line emitted by background threads during the swap can carry the new token
+  before redaction is armed for it. See research R13.
+- No network probe: `/tickstats reload` validates the local configuration shape
+  only. Auth and reachability are verified implicitly by the next scheduled sync
+  (or an immediate `/tickstats sync`), which surfaces any failure through the
+  normal observability path (structured log line + `/tickstats status`).
 
 ---
 

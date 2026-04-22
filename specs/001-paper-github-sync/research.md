@@ -13,10 +13,32 @@ this phase.
 **Decision**: Register `/tickstats` through Paper's Brigadier-backed Lifecycle API
 (`LifecycleEvents.COMMANDS`), and declare only the permission node in `plugin.yml`.
 
+**Verified (2026-04-22) against Paper docs + Javadoc**:
+- `LifecycleEvents.COMMANDS` FQN: `io.papermc.paper.plugin.lifecycle.event.types.LifecycleEvents.COMMANDS`.
+- `JavaPlugin.getLifecycleManager()` returns
+  `io.papermc.paper.plugin.lifecycle.event.LifecycleEventManager<Plugin>`.
+- `Commands` FQN: `io.papermc.paper.command.brigadier.Commands`. Every node's source
+  type is `io.papermc.paper.command.brigadier.CommandSourceStack`.
+- Concrete registration sketch (compiles on 1.21.0 through 1.21.12):
+
+```java
+this.getLifecycleManager().registerEventHandler(LifecycleEvents.COMMANDS, event -> {
+    LiteralCommandNode<CommandSourceStack> node = Commands.literal("tickstats")
+        .requires(src -> src.getSender().hasPermission("tickstats.admin"))
+        .then(Commands.literal("sync").executes(this::onSync))
+        .then(Commands.literal("status").executes(this::onStatus))
+        .then(Commands.literal("reload").executes(this::onReload))
+        .build();
+    event.registrar().register(node, "TickstatsSync administration");
+});
+```
+
+**Version caveat**: `Commands.restricted(Predicate)` was added in **Paper 1.21.6** —
+do NOT use it. Stick to the plain `.requires(Predicate<CommandSourceStack>)` form,
+which has been stable since the lifecycle command API landed in 1.20.6 / 1.21.0.
+
 **Rationale**:
-- Paper 1.21 formally exposes `io.papermc.paper.command.brigadier.Commands` through
-  `LifecycleEventManager`, replacing the legacy `plugin.yml`-registered command path.
-- Brigadier gives us per-subcommand permission checks, clean argument validation, and
+- Brigadier gives per-subcommand permission checks, clean argument validation, and
   proper "unknown command" fallthrough for unauthorized senders (FR-025).
 - Declaring the command in `plugin.yml` in addition to Brigadier would fragment the
   permission model.
@@ -29,38 +51,74 @@ this phase.
 **Consequences for implementation**:
 - `TickstatsCommand` is registered via
   `plugin.getLifecycleManager().registerEventHandler(LifecycleEvents.COMMANDS, ...)`
-  in `onEnable`.
+  in `onEnable` (after the bootstrap steps that install the PAT masker — see plan
+  "Bootstrap sequence").
 - `plugin.yml` declares only `permissions:` and plugin metadata.
 - No `commands:` block in `plugin.yml`.
+
+**Sources**:
+- https://docs.papermc.io/paper/dev/command-api/basics/registration
+- https://docs.papermc.io/paper/dev/command-api/basics/requirements
+- https://jd.papermc.io/paper/1.21.4/io/papermc/paper/plugin/lifecycle/event/types/LifecycleEvents.html
+- https://jd.papermc.io/paper/1.21.11/org/bukkit/plugin/java/JavaPlugin.html
 
 ---
 
 ## R2 — JGit version and module set
 
-**Decision**: Pin JGit to `6.10.0.202406032230-r` (latest 6.x line at Java 21 baseline)
-using two artifacts:
+**Decision** (bumped 2026-04-22): Pin JGit to **`6.10.1.202505221210-r`** — the
+latest 6.x service release. This includes the fix for **CVE-2025-4949** (XML
+entity hardening). Previous pin was `6.10.0.202406032230-r` which predates the
+advisory.
 
 ```kotlin
-implementation("org.eclipse.jgit:org.eclipse.jgit:6.10.0.202406032230-r")
-implementation("org.eclipse.jgit:org.eclipse.jgit.http.apache:6.10.0.202406032230-r")
+implementation("org.eclipse.jgit:org.eclipse.jgit:6.10.1.202505221210-r")
+implementation("org.eclipse.jgit:org.eclipse.jgit.http.apache:6.10.1.202505221210-r")
 ```
 
 The Apache HTTP connector (not the default JDK connector) is chosen for its proven
 HTTPS-proxy behavior and because it respects `JAVA_HTTP(S)_PROXY` env vars via Apache
 HttpClient. Both artifacts are shaded and relocated.
 
-**Rationale**:
-- JGit 6.x targets Java 11+ and runs cleanly on Java 21.
-- The `http.apache` add-on handles corporate proxy and SNI edge cases better than
-  JGit's default `JDKHttpConnector`.
-- Pinning an explicit version (not a SNAPSHOT or `[6.0,)`) keeps shaded-JAR output
-  reproducible — important for releases.
+**Rationale for the 6.x line**:
+- JGit 6.x minimum is Java 11; runs cleanly on Java 21.
+- Service release `6.10.1` (2025-05-22) is the latest 6.x; API-compatible with
+  6.10.0.
+- Pinning an explicit version keeps shaded-JAR output reproducible.
+
+**Open question — stay on 6.x or jump to 7.x?**
+
+JGit 7.x exists with notable improvements:
+
+| Aspect | JGit 6.10.1 | JGit 7.6.0 |
+|--------|-------------|------------|
+| Release date | 2025-05-22 | 2026-03-02 |
+| Java minimum | 11 | 17 |
+| Push concurrency | baseline | "Do not always refresh packed-refs during ref updates" (7.x improvement) |
+| Multi-pack index work | no | yes (landed in 7.5.0) |
+| Security patches | CVE-2025-4949 included | includes all 6.x fixes |
+
+Because Paper 1.21 already requires Java 21, the "Java 17 minimum" in 7.x is free.
+
+**Arbitration (2026-04-22)**: this iteration stays on **JGit 6.10.1**. No jump to 7.x
+now. Migration to 7.x is explicitly envisaged as a **v2 follow-up** *only* if concrete
+push-performance issues surface against real operator repositories — there is no
+present need. The small API audit (6.x → 7.x) is deferred until evidence-driven.
+Document any such evidence in the v2 migration issue when it opens.
+
+**Shallow+push status (verified 2026-04-22)**: no explicit release note in either
+6.10.1 or 7.x claims a shallow+push-to-GitHub fix. The historical caveat stands —
+our shallow clone fallback (documented below) is still load-bearing.
 
 **Alternatives considered**:
-- JGit 7.x (dropped Java 11, still Java 11-compatible): considered but 6.10.x is the
-  stable line most downstream projects pin against and has broader compatibility if
-  a consumer later downgrades to Java 17.
 - JDK built-in HTTP connector: rejected for proxy edge cases.
+- Staying on 6.10.0: rejected after CVE-2025-4949 disclosure.
+
+**Sources**:
+- https://projects.eclipse.org/projects/technology.jgit/releases/6.10.1
+- https://projects.eclipse.org/projects/technology.jgit/releases/7.6.0
+- https://projects.eclipse.org/projects/technology.jgit/releases/7.0.0
+- https://github.com/eclipse-jgit/jgit/tags
 
 **Implementation note**: on plugin startup, set
 `HttpTransport.setConnectionFactory(new HttpClientConnectionFactory())` once, before
@@ -96,22 +154,58 @@ proportionally to branch history (typically still a few MB for a stats-only repo
 but the push path is bulletproof. The switch is a one-line change in `GitService`
 and MUST NOT introduce a multi-branch clone.
 
+**Coexistence caveat — `HttpTransport.setConnectionFactory` is process-global**:
+JGit's HTTP connection factory is a JVM-wide static. Calling
+`HttpTransport.setConnectionFactory(new HttpClientConnectionFactory())` in our
+`onEnable` affects every other plugin on the same server that uses JGit directly or
+transitively. If another plugin also sets its own connector — or relies on JGit's
+default JDK connector — whichever plugin enables last wins. Documented consequences:
+
+- If we load last, we win and proxy handling is Apache-based for all JGit consumers
+  on that server.
+- If another plugin loads last and installs a different connector, our HTTPS calls go
+  through their choice. This has no observable impact on correctness (HTTPS still
+  works), but proxy-edge-case behavior may differ.
+- The plugin does NOT try to detect or mediate this — the interaction is silent and
+  benign in practice. Operators running multiple JGit-based plugins should be aware.
+
 ---
 
 ## R3 — cron-utils version and flavor
 
-**Decision**: `com.cronutils:cron-utils:9.2.1`, configured with
-`CronDefinitionBuilder.instanceDefinitionFor(CronType.UNIX)` (5-field classic Unix
-cron). Evaluation uses `ExecutionTime.forCron(...)` with a `ZonedDateTime` in the
-operator-configured timezone (default `Europe/Paris`).
+**Decision**: `com.cronutils:cron-utils:9.2.1` (verified 2026-04-22 as the latest
+published release — there is no 9.3.x), configured with
+`CronDefinitionBuilder.instanceDefinitionFor(CronType.UNIX)` for classic 5-field Unix
+cron.
+
+**Verified API shape**:
+- `CronType.UNIX` is a valid enum value (the full enum is
+  `{ CRON4J, QUARTZ, UNIX, SPRING, SPRING53 }`).
+- Unix flavor requires **exactly 5 fields** (minute, hour, day-of-month, month,
+  day-of-week). A 6-field expression under `CronType.UNIX` throws
+  `IllegalArgumentException` at `parser.parse(...)`. Validation catches this during
+  `ConfigService.load()`.
+- `ExecutionTime.nextExecution(...)` signature (from source):
+
+  ```java
+  Optional<ZonedDateTime> nextExecution(final ZonedDateTime date);
+  Optional<ZonedDateTime> lastExecution(final ZonedDateTime date);
+  ```
+
+  **Returns `Optional<ZonedDateTime>`, not a bare `ZonedDateTime`.** Implementation
+  code MUST call `.orElseThrow(...)` or `.ifPresent(...)`. For a well-formed Unix
+  cron expression the `Optional` is always present, but unwrapping unsafely would
+  NPE on any library-side corner case — use `orElseThrow(IllegalStateException::new)`
+  with a descriptive message. `CronScheduler` is the single call site; pin this
+  idiom there once.
 
 **Rationale**:
 - Unix flavor matches operator muscle memory and the examples in `config.yml`
   (`0 */6 * * *`, `0 8,14,22 * * *`).
 - cron-utils 9.2.x is Java 11-compatible and runs on Java 21.
-- `ExecutionTime.nextExecution(ZonedDateTime)` gives us millisecond-precise next-fire
-  computation; DST handling is deterministic (the library falls back to UTC offsets
-  on ambiguous local times, never double-fires).
+- `nextExecution(ZonedDateTime)` returns zone-aware millisecond-precise next-fire;
+  DST handling is deterministic (the library falls back to UTC offsets on ambiguous
+  local times, never double-fires).
 
 **Alternatives considered**:
 - Quartz Scheduler: overkill; brings triggers, job stores, and thread pools we don't
@@ -120,6 +214,11 @@ operator-configured timezone (default `Europe/Paris`).
   dependency.
 - `java.time.DayOfWeek` + hand-rolled "every N hours": too limited for the "at 08,
   14, 22" acceptance scenario.
+
+**Sources**:
+- https://github.com/jmrozanec/cron-utils/blob/master/src/main/java/com/cronutils/model/time/ExecutionTime.java
+- https://github.com/jmrozanec/cron-utils/blob/master/src/main/java/com/cronutils/model/CronType.java
+- https://github.com/jmrozanec/cron-utils/releases
 
 ---
 
@@ -151,6 +250,27 @@ another producer writing to the same branch between our fetch and our push). Whe
 happens, we classify as `transient-failure`, log with redacted context, and let the
 retry loop handle it.
 
+**Local-clone corruption detection (for `GitService.initOrOpenLocalClone()`)**: on
+every plugin start and on every cycle, the plugin tests the local working copy against
+a fixed list of failure signals. Hitting ANY of them triggers a full rebuild
+(`rm -rf workdir` + re-clone) without operator intervention, per FR-010a:
+
+1. `workdir/` exists but contains no `.git/` directory — or `.git/` is missing its
+   core files (`HEAD`, `config`, `refs/`).
+2. `git.getRepository().resolve("HEAD")` throws or returns null.
+3. The remote URL configured in `.git/config` does not match the current
+   `github.repo` after resolution.
+4. A `fetch` on the existing working copy raises
+   `org.eclipse.jgit.errors.RepositoryNotFoundException`, `CorruptObjectException`, or
+   `IOException` with a broken-object signature.
+5. `git.status()` itself throws — meaning the index or working tree is structurally
+   unreadable.
+
+Any other fetch error (auth, network, conflict) is treated as a normal transient
+failure and does NOT trigger a rebuild. The distinction matters: we don't want to
+re-clone on every 401, or we'd burn bandwidth without solving the underlying
+credential issue.
+
 ---
 
 ## R5 — Daily snapshot first-write-wins detection
@@ -180,7 +300,11 @@ cycle. The check uses
 **Decision**: `CronScheduler` is a self-rescheduling async task. On each firing:
 
 1. Run the sync cycle (via `SyncOrchestrator.runOnce()`).
-2. Compute next-fire from `ExecutionTime.nextExecution(ZonedDateTime.now(zone))`.
+2. Compute next-fire from
+   `executionTime.nextExecution(ZonedDateTime.now(zone)).orElseThrow(...)` — the
+   library returns `Optional<ZonedDateTime>` (see R3); for a well-formed Unix
+   expression it is always present, but we unwrap safely and log a clear error if
+   the Optional is empty (indicates a library regression, not an operator issue).
 3. Convert the delta-milliseconds to server ticks (`deltaMs / 50`), clamp to a
    minimum of 1 tick.
 4. Call `scheduler.runTaskLaterAsynchronously(plugin, this, ticks)` to arm the next
@@ -230,30 +354,55 @@ entries under `stats/`, we commit; otherwise we skip.
 
 ## R8 — Credential redaction strategy
 
-**Decision**: `PatMasker` holds a volatile `String currentToken` reference. On every
-config load, the new token replaces the old. `PatMasker.mask(String s)` returns
-`s.replace(currentToken, "***")` when `currentToken` is non-empty, otherwise returns
-`s` unchanged. `SafeLogger` wraps `java.util.logging.Logger` and runs every message
-— and every exception message/stack-trace summary — through `PatMasker.mask(...)`.
+**Decision**: install a single `java.util.logging.Filter` on the plugin's root
+`Logger` at the **very first statement** of `onEnable()`, before any other code
+runs. The filter consults `PatMasker` and rewrites the log record's message through
+`PatMasker.mask(...)` before the record reaches any handler.
+
+```java
+// First statement of onEnable()
+PatMasker masker = new PatMasker();                         // no token yet
+Logger pluginLogger = getLogger();
+pluginLogger.setFilter(new LogRedactionFilter(masker));     // catches every record
+// ... later, ConfigService.load() runs; once a token is resolved,
+// masker.setToken(token) is called so subsequent log lines are redacted.
+```
+
+`PatMasker` holds a single volatile `String currentToken` (null/empty before the
+first config load). `mask(String s)` returns `s.replace(currentToken, "***")` when
+`currentToken` is non-empty, otherwise returns `s` unchanged. The filter uses the
+rendered record text (including formatted arguments and any throwable's message)
+produced by a lightweight internal `Formatter`, runs it through
+`PatMasker.mask(...)`, and publishes the redacted record via the standard handler
+chain.
 
 **Rationale**:
-- Single source of truth for the active token means rotation (via `/tickstats reload`)
-  automatically updates redaction scope.
-- All plugin code is required to go through `SafeLogger` — enforced by review and by
-  a spotbugs/checkstyle rule forbidding `Logger.getLogger(...)` calls outside
-  `util/`.
+- Single enforcement point: any code path that emits through
+  `java.util.logging.Logger` — including JGit's own logger hierarchy, since JGit uses
+  JUL — is caught regardless of author discipline.
+- No wrapper class: `SafeLogger` (formerly proposed) is removed; plugin code calls
+  `Logger.getLogger(...)` or `getLogger()` normally. There is nothing to audit.
+- Rotation works automatically: on `/tickstats reload` the masker's token reference
+  is updated and the same filter keeps running.
 - `String.replace` is O(n·m) but strings are small (log lines) and n·m is bounded.
 
 **Alternatives considered**:
-- java.util.logging `Filter`: would require installing the filter on every Logger a
-  downstream library might create; fragile.
+- Caller-discipline wrapping (`SafeLogger` class with mandatory `log(...)` calls):
+  rejected — every new contributor has to remember the convention, and library code
+  (JGit) bypasses it entirely. The Filter approach is an upgrade, not a regression:
+  a single filter installation wins at the JUL root handler, which JGit uses too.
 - Regex-based heuristic ("anything that looks PAT-shaped"): would catch valid tokens
   but also produce false positives on commit SHAs. Rejected.
 
-**Extra precaution**: JGit's `UsernamePasswordCredentialsProvider` does not log the
-password. We double-check by setting `-Dorg.eclipse.jgit.http.debug=false` and by
-wrapping JGit's `Logger` facade through `SafeLogger` where possible. JGit exception
-`.getMessage()` is passed through the masker before emission.
+**Startup ordering invariant**: `PatMasker` construction + filter installation MUST
+precede every other statement in `onEnable()`, including any `getLogger().info(...)`
+banner. If a line of code above the masker install ever logs the token — say, during
+future changes — the token will leak. Reviewers MUST reject PRs that add code above
+the masker install.
+
+**Library-side double-check**: JGit's `UsernamePasswordCredentialsProvider` does not
+log the password. We additionally set `-Dorg.eclipse.jgit.http.debug=false` at
+startup as a belt-and-suspenders measure.
 
 ---
 
@@ -286,25 +435,113 @@ auth). SnakeYAML is not shaded — consumed through Paper's bundled copy.
 - No relocation: risks breakage on servers with other git-based plugins.
 - Module-path isolation via Java 9 modules: incompatible with Paper's classloader.
 
+### Shadow plugin coordinate and version (verified 2026-04-22)
+
+**Plugin ID**: `com.gradleup.shadow` — the active fork. The old
+`com.github.johnrengelman.shadow` upstream was archived when maintenance
+transferred to the GradleUp org.
+
+**Pinned version**: `9.4.1` (released 2026-03-27). Application syntax:
+
+```kotlin
+plugins {
+    id("com.gradleup.shadow") version "9.4.1"
+}
+```
+
+**Prerequisites of Shadow 9.4.1**:
+- **Gradle 9.0+** — see the Gradle wrapper subsection below for the exact pin.
+- **Java 17+** (runtime; satisfied by Paper 1.21's Java 21 requirement).
+- Shadow 9.4.1 also updated its embedded ASM / jdependency to handle Java 26 class
+  files — a nice-to-have if the project ever moves off Java 21 LTS.
+
+### Gradle wrapper version (arbitrated 2026-04-22)
+
+**Decision**: pin the Gradle wrapper to **Gradle 9.4.1** (released 2026-03-19 — the
+latest stable Gradle 9.x at the time of planning). The pin is a conscious choice:
+it aligns the build-tool major with Shadow 9.4.1's current toolchain and keeps the
+project on the version line where Shadow lands fixes.
+
+`gradle/wrapper/gradle-wrapper.properties`:
+
+```properties
+distributionBase=GRADLE_USER_HOME
+distributionPath=wrapper/dists
+distributionUrl=https\://services.gradle.org/distributions/gradle-9.4.1-bin.zip
+networkTimeout=10000
+validateDistributionUrl=true
+zipStoreBase=GRADLE_USER_HOME
+zipStorePath=wrapper/dists
+```
+
+The `distributionSha256Sum` field is recommended in addition, pulled from
+<https://gradle.org/release-checksums/#9.4.1>, and added in the same commit that
+generates the wrapper (so nobody has to hand-edit later).
+
+**Rollback path (not the default)**: if a blocker appears on Gradle 9.x
+specifically — for example, a Shadow 9.4.x regression that can't be worked around —
+the documented rollback is to pin:
+
+- Gradle wrapper to the last 8.x stable (Gradle 8.14.x as of this research date).
+- Shadow to **`8.3.x`** (the last 8.x-compatible line, same coordinate
+  `com.gradleup.shadow`).
+
+This rollback is explicitly NOT the default. It exists only as a one-commit escape
+hatch, should the need arise. No code or contract should assume it.
+
+**Sources**:
+- https://gradleup.com/shadow/
+- https://github.com/GradleUp/shadow/releases
+- https://plugins.gradle.org/plugin/com.gradleup.shadow
+- https://gradle.org/releases/
+- https://services.gradle.org/distributions/gradle-9.4.1-bin.zip
+- https://gradle.org/release-checksums/
+
 ---
 
 ## R10 — Folia compatibility
 
-**Decision**: Ship the plugin as Folia-safe without claiming Folia support. No
-`folia-supported: true` in `plugin.yml`, but the code avoids Folia-forbidden patterns
-(main-thread assumptions, global state shared across region threads).
+**Decision (arbitrated 2026-04-22)**: **Paper only. Folia is NOT supported in v1.**
 
-**Rationale**:
-- The plugin does not touch any per-region state (entities, worlds, blocks). Every
-  async task is independent of region threads.
-- Adding `folia-supported: true` requires a Folia test matrix we're not committing
-  to in this iteration.
-- Users running Folia can safely load the plugin by editing `plugin.yml` themselves;
-  that's out of scope.
+- `plugin.yml` does NOT declare `folia-supported: true`.
+- The plugin uses `Bukkit.getScheduler().runTaskLaterAsynchronously(...)` throughout.
+- Folia operators attempting to load the JAR get an explicit refusal from Folia's
+  own plugin loader (Folia hard-gates on the missing flag) — which is the honest
+  behavior, since our scheduler code would throw `UnsupportedOperationException` on
+  Folia anyway.
+- `README.md` MUST carry the line:
+  `Folia is not supported; targeting Paper 1.21.11+ and 1.21.12+ (latest experimental).`
 
-**Alternatives considered**:
-- Declare full Folia support: would require testing Folia builds. Deferred.
-- Reject Folia loads: unnecessarily restrictive.
+**Audience-mismatch justification**:
+TickstatsSync's target audience is Paper operators running ~10–100-player servers —
+the community-scale, single-region workloads that Tickstats' dashboard was built
+for. Folia targets the opposite end: sharded, high-concurrency servers (1000+
+players, multi-region threading). There is no meaningful overlap. Adding dual
+Paper/Folia support would pay a steady tax in code, testing, and documentation to
+serve a population that is unlikely to deploy a stats-sync plugin at all.
+
+**Context confirmed against Folia docs and source** (the "why" for future readers):
+
+1. Folia refuses to load plugins without `folia-supported: true` — full stop.
+2. `BukkitScheduler.runTaskAsynchronously` / `runTaskLaterAsynchronously` throw
+   `UnsupportedOperationException` on Folia; async work there goes through
+   `getServer().getAsyncScheduler()` returning
+   `io.papermc.paper.threadedregions.scheduler.AsyncScheduler`, with delays in
+   `(long, TimeUnit)` rather than ticks.
+3. A hypothetical Folia path would require runtime detection
+   (`Class.forName("io.papermc.paper.threadedregions.RegionizedServer")`), a branch
+   in `CronScheduler`, and the `folia-supported: true` manifest flag.
+
+**Revisit criteria (v2)**: revisit the Paper-only decision only if a concrete user
+request arrives from a Folia operator asking for TickstatsSync to run on their
+deployment. At that point, Option B (dual support, ~30 LOC in `CronScheduler`
+plus a Folia smoke test) is a self-contained follow-up. Until then, no code and
+no docs mention Folia outside this research entry.
+
+**Sources**:
+- https://docs.papermc.io/paper/dev/folia-support/
+- https://jd.papermc.io/folia/1.21/io/papermc/paper/threadedregions/scheduler/AsyncScheduler.html
+- https://github.com/PaperMC/Folia
 
 ---
 
@@ -363,31 +600,54 @@ error — no degraded startup.
 
 ## R13 — `config.yml` hot-reload atomicity
 
-**Decision**: `/tickstats reload` follows this sequence:
+**Decision**: `/tickstats reload` follows this sequence, with a strict ordering
+that prevents any token-leakage window:
+
 1. Call `plugin.reloadConfig()` to refresh Paper's `FileConfiguration`.
 2. Invoke `ConfigService.load()` which validates the full tree. On any error, the
    old `TickstatsSyncConfig` reference stays active and the command reports the
    error — no partial apply.
-3. On success, perform a repo reachability probe (HTTPS HEAD to
-   `https://github.com/<owner>/<repo>.git/info/refs?service=git-upload-pack` with
-   the new token) off-thread. If the probe fails, treat as config error (FR-019).
-4. Swap the active config reference atomically (single volatile write).
-5. Call `cronScheduler.reschedule(newConfig.schedule())`, which cancels the pending
-   task and arms a new one from the new cron expression.
-6. Call `patMasker.setToken(newConfig.github().token())` so log redaction tracks
-   the new token.
+3. **Update `PatMasker` token FIRST**: `patMasker.setToken(newConfig.token())`.
+   From this instant, any log line that mentions either the old or the new token
+   is redacted (the masker uses the current token for `replace`; prior log records
+   are already past the filter).
+4. **Swap the active config reference** atomically (single volatile write on
+   `ConfigService`'s `AtomicReference<TickstatsSyncConfig>`).
+5. Call `cronScheduler.reschedule(newConfig)`, which cancels the pending task and
+   arms a new one from the new cron expression.
+6. Command replies with the new "next scheduled sync" time.
 
-**Rationale**:
-- Probe-before-swap prevents a reload from silently installing a broken config.
-- Single volatile write makes the swap atomic; ongoing reads of the reference see
-  either the old or the new config, never a half-built object.
-- Scheduler rescheduling is idempotent — cancelling a non-existent task is a no-op.
+**No reachability probe**. If the new configuration has an incorrect PAT, a wrong
+`owner/repo`, or an unreachable host, the next scheduled cron tick (or an immediate
+`/tickstats sync`) surfaces the failure through the normal observability path —
+log line with `outcome=FAILURE category=AUTH|NETWORK` and `/tickstats status`
+showing the broken state. The reload command's job is limited to validating
+**local** shape (YAML parses, fields present, cron compiles, timezone resolves);
+network validation is deferred to the next actual sync.
+
+**Ordering rationale** (steps 3 and 4):
+
+- Token-update-before-config-swap closes the race where a background thread,
+  reading the newly-swapped config for an in-flight git operation, could log
+  through a PatMasker whose token hasn't yet been updated — leaking the new token
+  before the first filter hit after reload.
+- Config-swap-before-scheduler-reschedule is safe because the scheduler reads the
+  config fresh when it arms the next task.
+
+**Rationale for dropping the reachability probe**:
+- The probe duplicated the very next sync's auth/network checks.
+- A probe that passes does not guarantee a subsequent sync will pass (network state
+  changes in seconds).
+- Eliminating the probe removes an HTTP round-trip, a second failure mode
+  ("reload succeeded, but five minutes later sync fails"), and an out-of-band
+  code path that duplicated `GitService.fetchAndReset` minus the reset step.
 
 **Alternatives considered**:
 - Lock-based swap with a `ReadWriteLock`: more complex, no observable benefit given
   read-mostly access and immutable config records.
-- Validate-only reload (no reachability probe): rejected because a PAT typo would
-  survive reload and only fail at the next cron tick.
+- Keep the probe: rejected per over-engineering audit — duplicates the next sync.
+- Swap config before updating masker: rejected — leaves a window for token leakage
+  during the reload's own post-swap log lines.
 
 ---
 
@@ -420,9 +680,14 @@ this output (only the `yes/no` indicator).
 
 ---
 
-## R15 — Error categorization for observability
+## R15 — Error categorization and log line format
 
-**Decision**: `SyncOrchestrator` labels every failure with one of:
+**Decision**: `SyncOrchestrator` labels every failure with one of the five
+categories below. Each sync cycle emits exactly one log line at `INFO` (success /
+no-changes) or `WARNING` (failure) level, conforming to the pinned format further
+down.
+
+**Failure categories**:
 
 | Category | Example |
 |----------|---------|
@@ -430,11 +695,54 @@ this output (only the `yes/no` indicator).
 | `NETWORK` | `UnknownHostException`, connect/read timeout, TLS failure |
 | `CONFLICT` | Push rejected non-fast-forward after fetch+reset (rare; external writer) |
 | `IO` | Filesystem error in `world/stats/` or `workdir/` |
-| `CONFIG` | Invariant broken at runtime (e.g., server_name contains `/`) |
-| `UNKNOWN` | Catch-all for unexpected exceptions |
+| `UNKNOWN` | Catch-all for unexpected exceptions, including plugin bugs |
 
-Each log line includes the category; the metrics snapshot exposed to `/tickstats
-status` tracks the most recent category per outcome.
+No `CONFIG` category: configuration is validated at load/reload time and the
+runtime pipeline never sees an invalid `TickstatsSyncConfig`. A runtime assertion
+break on config shape falls under `UNKNOWN` (it's a plugin bug, not an operator
+issue).
+
+**Pinned log line format**:
+
+```
+[TickstatsSync] outcome=<OUTCOME> files=<N> commit=<sha7-or-none> duration_ms=<N> category=<CATEGORY-or-none> attempts=<N>
+```
+
+Every field is always present; fields not applicable to the outcome use `none`:
+
+| Field | Always present? | Value when outcome applies | Value when not applicable |
+|-------|-----------------|----------------------------|---------------------------|
+| `outcome` | yes | `SUCCESS_WITH_COMMIT` / `SUCCESS_NO_CHANGES` / `FAILURE` | — (never empty) |
+| `files` | yes | count of files staged (or pushed) this cycle | `0` if nothing was read / written |
+| `commit` | yes | 7-char short SHA on `SUCCESS_WITH_COMMIT` | `none` otherwise |
+| `duration_ms` | yes | total wall-clock ms from cycle start to outcome | — (always present) |
+| `category` | yes | one of the 5 `FailureCategory` values on `FAILURE` | `none` on success outcomes |
+| `attempts` | yes | number of attempts the cycle executed (≥ 1) | — (always present) |
+
+Example success lines:
+
+```
+[TickstatsSync] outcome=SUCCESS_WITH_COMMIT files=42 commit=a1b2c3d duration_ms=812 category=none attempts=1
+[TickstatsSync] outcome=SUCCESS_NO_CHANGES files=42 commit=none duration_ms=124 category=none attempts=1
+[TickstatsSync] outcome=SUCCESS_WITH_COMMIT files=42 commit=e5f6a7b duration_ms=2348 category=none attempts=2
+```
+
+Example failure lines:
+
+```
+[TickstatsSync] outcome=FAILURE files=42 commit=none duration_ms=1532 category=AUTH attempts=3
+[TickstatsSync] outcome=FAILURE files=0 commit=none duration_ms=62 category=IO attempts=1
+```
+
+**Rationale for this format**:
+- `key=value` is trivially grep-able and jq-convertible (`awk '{for(i=2;i<=NF;i++)print $i}' | sort | uniq -c`).
+- Fixed field order + always-present fields lets operators write monitoring rules without
+  null checks.
+- The `[TickstatsSync]` prefix matches Paper's plugin log convention so it appears
+  consistently in `server.log` alongside other plugins.
+- No free-form tail; operators get all the detail they need in structured form and
+  the full throwable (for `FAILURE`) is logged via a subsequent `.log(Level.WARNING, throwable)`
+  call whose rendered output also flows through the `LogRedactionFilter`.
 
 **Rationale**:
 - Operators debugging a broken sync first need to know "is this me or GitHub?".

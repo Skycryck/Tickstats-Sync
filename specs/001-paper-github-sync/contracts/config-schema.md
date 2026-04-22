@@ -136,7 +136,14 @@ also returned to the `/tickstats reload` invoker verbatim.
 
 ## Reload semantics
 
-On `/tickstats reload`, this file is re-read from disk. If validation fails, the
-previously-active config stays in place and the reload is reported as failed
-(FR-019). If validation succeeds, the reachability probe (R13 in `research.md`) runs;
-only on both passing does the swap occur.
+On `/tickstats reload`, this file is re-read from disk and its shape is revalidated
+locally (YAML parses, fields present, cron compiles, timezone resolves). If
+validation fails, the previously-active config stays in place and the reload is
+reported as failed (FR-019). If validation succeeds, `PatMasker` is updated with
+the new token, the active `TickstatsSyncConfig` reference is swapped atomically,
+and the scheduler is rearmed from the new cron expression (see research R13 for
+the exact ordering).
+
+No network probe runs as part of reload: auth and repository reachability are
+verified implicitly by the next scheduled sync (or an immediate `/tickstats sync`)
+and surface through the normal observability path.

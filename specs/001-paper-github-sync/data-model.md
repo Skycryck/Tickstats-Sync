@@ -8,131 +8,101 @@ Entities. Everything is immutable where practical; mutable state is quarantined 
 
 ---
 
-## Configuration records (package `config/`)
+## Configuration record (package `config/`)
 
-All configuration types are Java 21 `record`s — immutable, value-equality, auto-generated
-accessors. Instances are produced only by `ConfigService.load()` after full validation;
-no constructor accepts raw YAML.
+A single flat `record` holds the entire validated configuration. Built only by
+`ConfigService.load()` after full validation; no constructor accepts raw YAML.
 
 ### `TickstatsSyncConfig`
 
 ```java
 public record TickstatsSyncConfig(
-    GitHubConfig github,
-    ServerConfig server,
-    ScheduleConfig schedule,
-    RetryConfig retry
-) {}
-```
-
-Root of the configuration tree. Passed by reference to every service that needs it.
-Rebuilt on each `/tickstats reload`; never mutated in place.
-
-### `GitHubConfig`
-
-```java
-public record GitHubConfig(
+    // GitHub section
     String ownerAndRepo,         // "owner/repo-name"
     String branch,               // default "main"
     String token,                // resolved from config.yml or env var; validated non-empty
     String commitAuthorName,
-    String commitAuthorEmail
-) {}
-```
+    String commitAuthorEmail,
 
-**Validation rules**:
-- `ownerAndRepo` must match `^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$`.
-- `branch` must be non-empty and a valid git ref name (no spaces, no control chars).
-- `token` must be non-empty after env-var fallback (`TICKSTATSSYNC_GITHUB_TOKEN`).
-- `commitAuthorEmail` must match a minimal email shape (`something@something`); we do
-  not RFC-validate.
+    // Server section
+    String serverName,
+    Path statsPath,              // absolute, resolved against the server directory
 
-**Lifecycle**: built once per `ConfigService.load()`. Token is redacted in any
-`toString()` override (never auto-generated).
-
-### `ServerConfig`
-
-```java
-public record ServerConfig(
-    String name,
-    Path statsPath              // absolute, resolved against the server directory
-) {}
-```
-
-**Validation rules**:
-- `name` must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` — safe as a single path
-  segment, length-bounded.
-- `statsPath` must exist, be a directory, and be readable at load time. Missing =
-  config error. (Not a sync error: the server itself is misconfigured if this
-  directory is absent.)
-
-### `ScheduleConfig`
-
-```java
-public record ScheduleConfig(
-    String cronExpression,      // raw, already validated by cron-utils
+    // Schedule section
+    String cronExpression,       // raw, already validated by cron-utils
     ZoneId timezone,
     boolean syncOnStartup,
-    boolean snapshotsEnabled
+    boolean snapshotsEnabled,
+
+    // Retry section
+    int maxAttempts,             // default 3
+    Duration initialBackoff      // default Duration.ofSeconds(10)
 ) {}
 ```
 
-**Validation rules**:
-- `cronExpression` must parse under `CronType.UNIX` via cron-utils.
-- `timezone` must be a valid `java.time.ZoneId` (e.g., `Europe/Paris`, `UTC`,
-  `America/New_York`). Default: `Europe/Paris`.
-- `syncOnStartup` default `false` — avoids a startup-time surprise push on config
-  mistakes.
-- `snapshotsEnabled` default `true`.
+Only one record, no nested sub-records — the full config is passed wholesale to every
+service that needs it, and the grouping is preserved by comment bands rather than
+extra types. Rebuilt on each `/tickstats reload`; never mutated in place.
 
-### `RetryConfig`
+**Validation rules** (all enforced at `ConfigService.load()` time):
 
-```java
-public record RetryConfig(
-    int maxAttempts,            // default 3
-    Duration initialBackoff     // default Duration.ofSeconds(10)
-) {}
-```
+| Field | Rule |
+|-------|------|
+| `ownerAndRepo` | Matches `^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$` |
+| `branch` | Non-empty; no whitespace or control characters; valid git ref name |
+| `token` | Non-empty after env-var fallback (`TICKSTATSSYNC_GITHUB_TOKEN`) |
+| `commitAuthorName` | Non-empty |
+| `commitAuthorEmail` | Matches minimal `.+@.+` shape (no RFC validation) |
+| `serverName` | Matches `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` — path-segment-safe, length-bounded, no leading `.` |
+| `statsPath` | Exists, is a directory, is readable at load time |
+| `cronExpression` | Parses under `CronType.UNIX` via cron-utils |
+| `timezone` | Resolvable `java.time.ZoneId`; default `Europe/Paris` |
+| `syncOnStartup` | Default `false` |
+| `snapshotsEnabled` | Default `true` |
+| `maxAttempts` | In `[1, 10]`; default `3` |
+| `initialBackoff` | In `[1 second, 5 minutes]`; default `10 seconds`; doubles each attempt |
 
-**Validation rules**:
-- `maxAttempts` in `[1, 10]`.
-- `initialBackoff` in `[1 second, 5 minutes]`.
-- Exponential doubling per attempt: 10 s → 20 s → 40 s for default settings.
+**Lifecycle**: built once per `ConfigService.load()`. A `toString()` override is
+written by hand (not auto-generated) so the token is redacted whenever the record is
+logged.
 
 ---
 
 ## Sync domain types (package `sync/`)
 
-### `SyncCycle` (transient value, not persisted)
+### Cycle state (local variables, no class)
 
-Ephemeral: constructed at the top of `SyncOrchestrator.runOnce()`, discarded at the
-bottom. Not a `record` because it accumulates information as the cycle progresses.
+`SyncOrchestrator.runOnce()` tracks per-cycle state in **local variables**, not a
+dedicated class. The variables are approximately:
 
-Fields of interest (all package-private):
-- `Instant startedAt`
-- `ZonedDateTime syncDate` (for snapshot folder name determination)
-- `Map<UUID, byte[]> readStats`
-- `boolean snapshotWritten`
-- `Optional<ObjectId> commitSha`
-- `SyncOutcome outcome`
-- `Optional<FailureCategory> failureCategory`
-- `Optional<Throwable> failure`
+```java
+Instant startedAt = clock.instant();
+ZonedDateTime syncDate = ZonedDateTime.now(config.timezone());  // fixed at start
+StatsSnapshot snapshot = null;
+boolean snapshotWritten = false;
+ObjectId commitSha = null;
+int attempts = 0;
+SyncOutcome outcome;
+FailureCategory failureCategory = null;
+```
 
-**State transitions**:
+No `SyncCycle` class is created — the state lives only for the duration of the
+method and never leaks to another thread.
+
+**State transitions** inside `runOnce()`:
 
 ```
   STARTED
     │
-    ├─ readStats()       ──▶ READ_OK      or ──▶ FAILED(IO)
-    ├─ fetchAndReset()   ──▶ FETCH_OK     or ──▶ FAILED(AUTH | NETWORK | CONFLICT | IO)
-    ├─ writeFiles()      ──▶ STAGED       or ──▶ FAILED(IO)
-    ├─ hasChanges()? ────┬─ false         ──▶ NO_CHANGES (terminal)
+    ├─ readStats()       ──▶ READ_OK      or ──▶ FAILURE(IO)
+    ├─ fetchAndReset()   ──▶ FETCH_OK     or ──▶ FAILURE(AUTH | NETWORK | CONFLICT | IO)
+    ├─ writeFiles()      ──▶ STAGED       or ──▶ FAILURE(IO)
+    ├─ hasChanges()? ────┬─ false         ──▶ SUCCESS_NO_CHANGES (terminal)
     │                    └─ true
-    ├─ commitAndPush()   ──▶ PUSHED       or ──▶ FAILED(AUTH | NETWORK | CONFLICT)
+    ├─ commitAndPush()   ──▶ PUSHED       or ──▶ FAILURE(AUTH | NETWORK | CONFLICT)
     └─ terminal: SUCCESS_WITH_COMMIT
                 or SUCCESS_NO_CHANGES
-                or TRANSIENT_FAILURE_RETRIED
-                or ABANDONED_FAILURE
+                or FAILURE   (with attempts counter + category)
 ```
 
 ### `SyncOutcome` (enum)
@@ -141,10 +111,15 @@ Fields of interest (all package-private):
 public enum SyncOutcome {
     SUCCESS_WITH_COMMIT,
     SUCCESS_NO_CHANGES,
-    TRANSIENT_FAILURE_RETRIED,     // at least one attempt failed; a later attempt succeeded
-    ABANDONED_FAILURE              // all retries exhausted; cycle gave up
+    FAILURE          // final attempt failed after exhausting retries
 }
 ```
+
+Whether a successful outcome took retries is captured separately as an
+`int attempts` field on the cycle's metrics record — NOT as a distinct outcome. This
+keeps the taxonomy tight: either we ended with a commit, nothing to commit, or we
+ultimately failed. Retried-then-succeeded is still `SUCCESS_WITH_COMMIT` with
+`attempts > 1`.
 
 ### `FailureCategory` (enum)
 
@@ -154,10 +129,13 @@ public enum FailureCategory {
     NETWORK,     // DNS, TCP, TLS, timeout
     CONFLICT,    // push rejected non-fast-forward (rare after fetch+reset)
     IO,          // filesystem error
-    CONFIG,      // runtime invariant broken
-    UNKNOWN      // catch-all
+    UNKNOWN      // catch-all — including plugin bugs
 }
 ```
+
+No `CONFIG` value: configuration is validated at load/reload time and never
+becomes invalid mid-cycle. A runtime assertion failure on configuration shape would
+be a plugin bug and falls under `UNKNOWN`.
 
 ### `SyncMetrics` (mutable state, atomic)
 
@@ -169,6 +147,7 @@ public final class SyncMetrics {
     private final AtomicReference<Reachability> lastReachability = new AtomicReference<>(Reachability.UNKNOWN);
     private final AtomicReference<SyncOutcome> lastOutcome = new AtomicReference<>();
     private final AtomicReference<FailureCategory> lastFailureCategory = new AtomicReference<>();
+    private final AtomicInteger lastAttempts = new AtomicInteger(0);
 
     public enum Reachability { OK, FAILED, UNKNOWN }
 
@@ -277,9 +256,12 @@ public final class GitOperationException extends Exception {
 Thrown by every `GitService` method on failure. The orchestrator reads
 `category()` to populate `SyncMetrics.lastFailureCategory` and the log line.
 
-**PAT safety**: messages are pre-masked before being passed to the constructor, so
-the constructed exception can never carry the raw token. Callers assume this
-invariant.
+**PAT safety**: there is no longer a per-callsite masking contract. A
+`java.util.logging.Filter` installed on the plugin logger at the first statement of
+`onEnable()` intercepts every emitted record — including throwable chains rendered by
+`java.util.logging.Formatter` — and runs the rendered string through `PatMasker`
+before publication (see research R8). Exception messages constructed anywhere in the
+codebase are therefore safe without author discipline.
 
 ---
 
@@ -287,17 +269,17 @@ invariant.
 
 ```
 TickstatsSyncPlugin
+ ├── holds → PatMasker (singleton, volatile token ref — installed FIRST in onEnable)
+ ├── holds → LogRedactionFilter (java.util.logging.Filter — installed immediately after PatMasker)
  ├── holds → ConfigService ──► AtomicReference<TickstatsSyncConfig>
  ├── holds → SyncMetrics (singleton, thread-safe)
  ├── holds → SyncLock (singleton)
- ├── holds → PatMasker (singleton, volatile token ref)
- ├── holds → SafeLogger (wraps java.util.logging)
  ├── holds → StatsReader
  ├── holds → GitService (references TickstatsSyncConfig via ConfigService)
- ├── holds → SyncOrchestrator ──► uses StatsReader, GitService, SyncLock, SyncMetrics, RetryConfig
- ├── holds → CronScheduler  ──► references SyncOrchestrator, ScheduleConfig, SyncMetrics
- └── holds → TickstatsCommand ──► dispatches to {Sync,Status,Reload}Subcommand
-                                  which reference ConfigService, SyncLock, SyncMetrics, CronScheduler, SyncOrchestrator
+ ├── holds → SyncOrchestrator ──► uses StatsReader, GitService, SyncLock, SyncMetrics
+ ├── holds → CronScheduler  ──► references SyncOrchestrator, ConfigService, SyncMetrics
+ └── holds → TickstatsCommand (single class, methods onSync/onStatus/onReload)
+                                  ──► references ConfigService, SyncLock, SyncMetrics, CronScheduler, SyncOrchestrator
 ```
 
 No cycles. Configuration flows top-down from `ConfigService`; metrics flow bottom-up
@@ -309,11 +291,7 @@ from `SyncOrchestrator`.
 
 | Type | Validates | When |
 |------|-----------|------|
-| `TickstatsSyncConfig` | Aggregate record (all non-null) | `ConfigService.load()` |
-| `GitHubConfig` | owner/repo shape, branch name, token non-empty, email shape | `ConfigService.load()` |
-| `ServerConfig` | name charset + length, statsPath exists | `ConfigService.load()` |
-| `ScheduleConfig` | cron parses, timezone resolvable | `ConfigService.load()` |
-| `RetryConfig` | attempts in `[1,10]`, backoff in `[1s, 5m]` | `ConfigService.load()` |
+| `TickstatsSyncConfig` | All field rules in the Configuration record table above | `ConfigService.load()` |
 | `StatsSnapshot` | UUID filename match | `StatsReader.read()` |
 
 Every `[NEEDS CLARIFICATION]` for data shape is resolved. No deferred fields.

@@ -272,8 +272,10 @@ operator convenience, especially for PAT rotation and cadence tuning.
 - **FR-012**: System MUST NOT create an empty commit — if no stats file has changed
   since the last synced state, no commit is created.
 - **FR-013**: Commit messages MUST follow the pattern
-  `Update stats for <server-name> — YYYY-MM-DD HH:mm`, in English, dated in the
-  configured timezone.
+  `Update stats for <server-name> - YYYY-MM-DD HH:mm` (ASCII hyphen-minus `-`
+  between server name and timestamp, not an em-dash), in English, dated in the
+  configured timezone. ASCII-only keeps the message readable in every terminal and
+  log viewer regardless of UTF-8 support.
 - **FR-014**: System MUST push each commit to the remote immediately after creating
   it, using HTTPS authentication with the configured PAT.
 - **FR-015**: System MUST NEVER force-push. On push conflict the plugin fetches the
@@ -351,9 +353,15 @@ operator convenience, especially for PAT rotation and cadence tuning.
 
 **Language and artifacts**
 
-- **FR-031**: All plugin-produced strings (log lines, in-game messages, commit
-  messages, `config.yml` keys and comments, error messages, `README.md`) MUST be in
-  English.
+- **FR-031**: All plugin artifacts authored or produced by the project MUST be in
+  English, matching constitution Principle XI exactly. This covers: source code;
+  inline comments; Javadoc; class, method, field, parameter, variable, and package
+  names; log lines and log-message formatters; error messages; exception messages;
+  in-game command output; `config.yml` keys and comments; git commit messages; and
+  `README.md` (plus any other repository documentation authored as part of this
+  project). A pull request containing non-English strings in any of these artifacts
+  MUST be rejected at review regardless of the language of the prompt, issue, or
+  conversation that produced it.
 
 ### Key Entities
 

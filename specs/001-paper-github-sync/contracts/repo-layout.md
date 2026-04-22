@@ -59,9 +59,11 @@ paths are ever created, modified, or deleted by the plugin.
 ## Commit contract
 
 - Commit author: `<github.commit-author-name> <<github.commit-author-email>>`.
-- Commit message: exactly `Update stats for <server.name> — YYYY-MM-DD HH:mm`, where
-  the timestamp is in the configured timezone. ASCII em-dash (`—`, U+2014) is used
-  for visual clarity and is UTF-8 safe.
+- Commit message: exactly `Update stats for <server.name> - YYYY-MM-DD HH:mm`, where
+  the timestamp is in the configured timezone. An ASCII hyphen-minus (`-`, U+002D)
+  is used as the separator — plain ASCII renders correctly in every terminal,
+  commit viewer, and locale regardless of UTF-8 support. The constitution's em-dash
+  example (Principle X) is illustrative, not mandatory.
 - One commit per sync cycle that produced changes. Zero commits per cycle that
   produced no changes (FR-012).
 - Parent: always the current remote tip of the target branch at the time of push
