@@ -14,7 +14,11 @@ calendar day, and stays entirely off the main server thread.
 
 Technical approach (from user-provided stack + clarifications):
 
-- Java 21 + Gradle (Kotlin DSL) + `com.gradleup.shadow` to ship one relocated fat JAR.
+- Java 21 + **Gradle 9.4.1** (Kotlin DSL, pinned in
+  `gradle/wrapper/gradle-wrapper.properties`) + `com.gradleup.shadow:9.4.1` to ship
+  one relocated fat JAR. The Gradle 9.x target is a conscious alignment with the
+  active Shadow toolchain; rollback to Gradle 8.14.x + Shadow 8.3.x is documented in
+  research R9 as a one-commit escape hatch, but is not the default path.
 - Paper API 1.21 (`api-version: "1.21"`), tested against 1.21.11 stable and 1.21.12
   experimental.
 - Embedded JGit (`org.eclipse.jgit` + `org.eclipse.jgit.http.apache`) for all git
@@ -31,8 +35,10 @@ Technical approach (from user-provided stack + clarifications):
 - `com.cronutils:cron-utils` (Unix flavor) for schedule parsing and next-fire
   computation; the scheduler runs as a one-shot async task that reschedules itself
   after each firing.
-- `PatMasker` + `SafeLogger` centralize credential redaction; every log emission
-  inside the plugin goes through the wrapper.
+- `PatMasker` + a `java.util.logging.Filter` (installed on the plugin logger in the
+  **first statement of `onEnable()`**) centralize credential redaction; every log
+  record — including JGit's own JUL output — passes through the filter before
+  publication. No wrapper class, no author discipline required.
 - In-game commands route through a single `/tickstats <sub>` entry point gated by
   `tickstats.admin`.
 - Concurrent-invocation rejection (FR-003a) is enforced by a single `SyncLock` that
@@ -45,8 +51,46 @@ Technical approach (from user-provided stack + clarifications):
   used in [contracts/config-schema.md](contracts/config-schema.md): fine-grained PAT
   as the primary procedure, classic PAT in a secondary "Alternative for
   organizations without fine-grained PAT support" section with the dedicated-bot +
-  Write-role (not Admin) warning. This sectioning is a contract that authoring
-  tasks in `/speckit.tasks` MUST follow.
+  Write-role (not Admin) warning. The `README.md` MUST also carry a prominent
+  compatibility line near the top:
+  `Folia is not supported; targeting Paper 1.21.11+ and 1.21.12+ (latest experimental).`
+  This sectioning and disclaimer line are a contract that authoring tasks in
+  `/speckit.tasks` MUST follow.
+- On `onEnable()` with an invalid `config.yml`, the plugin stays **enabled-but-inert**:
+  it registers its commands, `/tickstats reload` remains operational as the escape
+  hatch, `/tickstats status` renders a red `⚠ config invalid: <reason>` banner at
+  the top of its output, and `/tickstats sync` politely refuses with an English
+  error message pointing the operator at the reload flow. The plugin is NEVER
+  auto-disabled — `disablePlugin(this)` would kill the commands and strand the
+  operator with no in-game recovery path.
+
+### Bootstrap sequence (onEnable)
+
+The order of service instantiation inside `TickstatsSyncPlugin.onEnable()` is
+load-bearing for credential safety and must be preserved exactly:
+
+1. **Instantiate `PatMasker`** — first statement, before any logger call.
+2. **Install `LogRedactionFilter`** on `getLogger()` — immediately after step 1,
+   still before any other code.
+3. **Set JGit static config**: `HttpTransport.setConnectionFactory(new HttpClientConnectionFactory())`,
+   `System.setProperty("org.eclipse.jgit.http.debug", "false")`.
+4. **Instantiate `SyncMetrics`, `SyncLock`** (stateless singletons; can't log the
+   PAT since they never see it).
+5. **Run `ConfigService.load()`**. If this throws or validation fails, record the
+   reason in `SyncMetrics.configInvalidReason` and continue to step 6 — DO NOT
+   return early. Inert-mode still needs commands registered.
+6. **Call `patMasker.setToken(config.token())`** — only if step 5 succeeded. In
+   inert mode, the masker stays at the no-op default (`currentToken == null`).
+7. **Instantiate `StatsReader`, `GitService`, `SyncOrchestrator`, `CronScheduler`** —
+   references the config via `ConfigService`. In inert mode these can be
+   constructed but `cronScheduler.start()` is NOT called.
+8. **Register `TickstatsCommand`** through `LifecycleEvents.COMMANDS`. This happens
+   in both healthy and inert mode so operators can run `/tickstats reload`.
+9. **Start `CronScheduler`** — only in healthy mode.
+10. **(Optional)** Fire an immediate sync if `syncOnStartup=true`.
+
+Any code added above step 2 is a constitutional violation (Principle IV): review
+MUST reject it.
 
 ## Technical Context
 
@@ -55,9 +99,10 @@ Technical approach (from user-provided stack + clarifications):
 **Primary Dependencies**:
 - `io.papermc.paper:paper-api:1.21.11-R0.1-SNAPSHOT` (compile-only, provided by
   the server)
-- `org.eclipse.jgit:org.eclipse.jgit` + `org.eclipse.jgit.http.apache` (shaded,
-  relocated)
-- `com.cronutils:cron-utils` (shaded, relocated)
+- `org.eclipse.jgit:org.eclipse.jgit:6.10.1.202505221210-r` +
+  `org.eclipse.jgit.http.apache:6.10.1.202505221210-r` (shaded, relocated; includes
+  CVE-2025-4949 fix — see research R2)
+- `com.cronutils:cron-utils:9.2.1` (shaded, relocated; no 9.3.x exists — verified)
 - SnakeYAML — **NOT shaded**, consumed through Paper's bundled instance via the
   Bukkit `FileConfiguration` API.
 - No other runtime dependencies.
@@ -120,11 +165,11 @@ Checked against [.specify/memory/constitution.md](../../.specify/memory/constitu
 | I | Strict Tickstats Compatibility Contract | ✅ Pass | `SyncOrchestrator` writes exclusively to `stats/<server-name>/data/<uuid>.json` and, on the first sync of each local day, `stats/<server-name>/snapshots/YYYY-MM-DD/<uuid>.json`. `StatsReader` returns `Map<UUID, byte[]>` — raw bytes, never parsed or transformed. No other paths touched. |
 | II | Non-Intrusive Server Operation | ✅ Pass | Every I/O, git, and network call runs on a `BukkitScheduler` async task. Main thread only does command-argument parsing. `world/stats/` is strictly read-only; the only filesystem writes happen inside `plugins/TickstatsSync/workdir/`. |
 | III | Declarative, Hot-Reloadable Configuration | ✅ Pass | `ConfigService.load()` validates the full YAML on boot and on `/tickstats reload`, producing an immutable `TickstatsSyncConfig`. Reload is atomic: either the new config fully validates and becomes active, or the old config stays in place with a specific error message to the operator. |
-| IV | Credential Safety | ✅ Pass | `PatMasker` replaces PAT substrings with `***` in any string it sees. `SafeLogger` runs every emission through it. Git operations use `UsernamePasswordCredentialsProvider` with an opaque token; JGit never logs it. Exception messages are re-wrapped through `SafeLogger` before propagation. |
+| IV | Credential Safety | ✅ Pass | `PatMasker` + `LogRedactionFilter` (a `java.util.logging.Filter` installed on the plugin's root logger at the first statement of `onEnable`) redact the PAT out of every JUL record — including JGit's own logger output — before publication. Git operations use `UsernamePasswordCredentialsProvider` with an opaque token; JGit never logs it. No author discipline is required: the filter catches every emission from any caller. |
 | V | Pragmatic Observability | ✅ Pass | `SyncOrchestrator` emits one structured log line per cycle outcome (timestamp, outcome, file count, commit SHA on success, duration ms, failure category on failure). `/tickstats status` reads atomic snapshots of metrics maintained by the orchestrator. |
 | VI | Resilience To Transient Failures | ✅ Pass | Retry loop in `SyncOrchestrator`: up to `retry.max-attempts` (default 3) with exponential backoff starting at `retry.initial-backoff-seconds` (default 10). Scheduler reschedules regardless of outcome. All exceptions are caught at the orchestrator boundary; none escape to kill the scheduler. |
 | VII | Sync Idempotence | ✅ Pass | After writing all files into the working copy, `GitService.hasChanges()` invokes `git.status()` on the tracked paths. If clean, commit/push is skipped and the cycle ends as `success-no-changes`. |
-| VIII | Explicit Permissions | ✅ Pass | `plugin.yml` declares the `tickstats.admin` permission with `default: op` and maps every `/tickstats` subcommand to it. Non-admin invocations return the generic "Unknown command" response. |
+| VIII | Explicit Permissions | ✅ Pass | `plugin.yml` declares the `tickstats.admin` permission node with `default: op`. Commands are registered through Paper's Brigadier `LifecycleEvents.COMMANDS` (not via a `commands:` block in `plugin.yml`), and every subcommand node carries a `.requires(source -> source.getSender().hasPermission("tickstats.admin"))` gate. Non-admin senders see the server's generic "Unknown or incomplete command" response — Brigadier hides the subcommand from tab-completion and rejects invocation. |
 | IX | Deployment Simplicity | ✅ Pass | Single shaded JAR via `com.gradleup.shadow`. JGit + cron-utils relocated under `com.skycryck.tickstatssync.shaded.*`. No external CLI tools required. Default `config.yml` written on first boot. |
 | X | Tickstats Convention Alignment | ✅ Pass | Default `schedule.timezone = Europe/Paris`. Snapshot dirs named `YYYY-MM-DD`. Commit messages follow `Update stats for <server-name> — YYYY-MM-DD HH:mm` in English. |
 | XI | English-Only Code And Artifacts | ✅ Pass | All source, Javadoc, class/method/field names, log lines, in-game messages, commit messages, `config.yml` keys/comments, and `README.md` authored in English. PR review gate catches drift. |
@@ -169,34 +214,27 @@ LICENSE
 README.md
 
 src/main/java/com/skycryck/tickstatssync/
-├── TickstatsSyncPlugin.java          # Paper main class — onEnable/onDisable lifecycle
+├── TickstatsSyncPlugin.java          # Paper main class — onEnable/onDisable lifecycle (bootstrap order is load-bearing, see above)
 ├── config/
 │   ├── ConfigService.java            # Load + validate config.yml → TickstatsSyncConfig
-│   ├── TickstatsSyncConfig.java      # Immutable record of validated configuration
-│   ├── GitHubConfig.java             # Nested record: repo, branch, token, author
-│   ├── ServerConfig.java             # Nested record: name, stats-path
-│   ├── ScheduleConfig.java           # Nested record: cron, timezone, sync-on-startup, snapshots-enabled
-│   └── RetryConfig.java              # Nested record: max-attempts, initial-backoff-seconds
+│   └── TickstatsSyncConfig.java      # Flat immutable record — all config fields, no nested sub-records
 ├── stats/
 │   └── StatsReader.java              # Read world/stats/*.json as raw byte maps
 ├── git/
 │   ├── GitService.java               # initOrOpenLocalClone / fetchAndResetToRemote / writeFiles / hasChanges / commitAndPush
-│   └── GitOperationException.java    # Typed git errors (auth, network, conflict, io)
+│   └── GitOperationException.java    # Typed git errors (auth, network, conflict, io, unknown)
 ├── sync/
-│   ├── SyncOrchestrator.java         # Full cycle: read → fetch+reset → write → hasChanges? → commit+push, with retry
-│   ├── SyncOutcome.java              # Enum: SUCCESS_WITH_COMMIT / SUCCESS_NO_CHANGES / TRANSIENT_FAILURE_RETRIED / ABANDONED_FAILURE
-│   ├── SyncMetrics.java              # Atomic snapshot of last-success, next-scheduled, file-count, last-reachability
+│   ├── SyncOrchestrator.java         # Full cycle: read → fetch+reset → write → hasChanges? → commit+push, with retry (per-cycle state in local vars, no SyncCycle class)
+│   ├── SyncOutcome.java              # Enum: SUCCESS_WITH_COMMIT / SUCCESS_NO_CHANGES / FAILURE
+│   ├── SyncMetrics.java              # Atomic snapshot of last-success, next-scheduled, file-count, last-reachability, last-attempts
 │   └── SyncLock.java                 # Non-blocking "is a sync in progress" gate for concurrent-invocation rejection
 ├── scheduler/
 │   └── CronScheduler.java            # Parse cron expression, compute next fire, self-reschedule after each run
 ├── command/
-│   ├── TickstatsCommand.java         # /tickstats root — dispatches to sub-handlers
-│   ├── SyncSubcommand.java
-│   ├── StatusSubcommand.java
-│   └── ReloadSubcommand.java
+│   └── TickstatsCommand.java         # /tickstats root — single class with private onSync/onStatus/onReload methods, all registered through one Brigadier builder
 └── util/
-    ├── PatMasker.java                # Single-source PAT redaction utility
-    └── SafeLogger.java               # Wraps java.util.logging.Logger; routes every message through PatMasker
+    ├── PatMasker.java                # Single-source PAT redaction (volatile token ref)
+    └── LogRedactionFilter.java       # java.util.logging.Filter installed on plugin logger — catches every record including JGit's
 
 src/main/resources/
 ├── plugin.yml                        # Paper plugin descriptor
@@ -221,17 +259,31 @@ src/test/resources/
 │   ├── valid-minimal.yml
 │   ├── valid-full.yml
 │   ├── invalid-missing-repo.yml
-│   └── invalid-bad-cron.yml
+│   ├── invalid-bad-cron.yml
+│   └── invalid-malicious-yaml.yml    # Contains !!java.net.URL etc. — asserts SnakeYAML 2.x rejects non-safe tags
 └── stats/
     └── sample-stats/                 # Fixture UUIDs + vanilla-shaped JSON bodies
 ```
 
 **Structure Decision**: Single Gradle project under `com.skycryck.tickstatssync`. The
-user's 8-module mental model maps onto nine packages (the extra one splits
-`SyncOrchestrator` into its data types and a non-blocking lock class for explicit
-concurrent-invocation rejection — FR-003a). Paper plugins are conventionally a single
+user's 8-module mental model maps onto seven packages plus a consolidated
+`TickstatsCommand` class (post-audit: nested config records, `SyncCycle`, and three
+`*Subcommand` files were flattened into single files; `SafeLogger` became a JUL
+`Filter` installed on the plugin logger). Paper plugins are conventionally a single
 JAR, so no multi-module split is warranted; the test tree mirrors `src/main/java` at
 the package level.
+
+### Assumptions (planning-level)
+
+- **SnakeYAML 2.x is provided by Paper runtime.** Paper 1.21.x bundles SnakeYAML 2.x,
+  which uses `SafeConstructor` by default and rejects non-safe tags such as
+  `!!java.net.URL`. The plugin depends on this via Paper's `FileConfiguration` API
+  without shading SnakeYAML itself. `ConfigServiceTest` carries an
+  `invalid-malicious-yaml.yml` fixture that asserts SnakeYAML 2.x refuses such tags,
+  so any regression in Paper's bundled YAML parser surfaces at build time.
+- The Paper server host has outbound HTTPS to `api.github.com` and `github.com`
+  (also a spec-level assumption; restated here because JGit's Apache connector
+  inherits the JVM's proxy settings).
 
 ## Complexity Tracking
 

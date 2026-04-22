@@ -47,8 +47,10 @@ us per-subcommand permission enforcement and cleaner argument parsing.
 
 ## Folia declaration
 
-No `folia-supported: true` field. The plugin is coded to be Folia-safe (R10) but we
-do not claim Folia support until a Folia test pass is in place.
+**None.** `folia-supported: true` MUST NOT appear in this file. Folia is not a
+supported target for v1 — see research R10 for the full rationale and the revisit
+criteria. Without the flag, Folia refuses to load the plugin, which is the intended
+behavior.
 
 ## Version injection
 
