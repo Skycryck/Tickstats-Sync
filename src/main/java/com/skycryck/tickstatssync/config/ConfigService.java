@@ -75,7 +75,10 @@ public class ConfigService {
             throw configError("server.name is not path-segment-safe: " + serverName);
         }
 
-        String statsPathRaw = raw.getString("server.stats-path", "world/stats");
+        // Paper 26.x stores vanilla stats at world/players/stats (legacy Paper / older
+        // Bukkit forks used world/stats). Operators with a non-default layout override
+        // this key explicitly in config.yml.
+        String statsPathRaw = raw.getString("server.stats-path", "world/players/stats");
         Path statsPath = serverDirectory.resolve(statsPathRaw).toAbsolutePath().normalize();
         if (!Files.isDirectory(statsPath)) {
             throw configError("server.stats-path is not a readable directory: " + statsPath);

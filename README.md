@@ -3,8 +3,8 @@
 Folia is not supported. Targeting Paper 26.1.2+ (build #19 or later, JDK 25 required).
 
 **TickstatsSync** is a Paper plugin that automatically syncs your Minecraft server's
-vanilla stats (`world/stats/*.json`) to a GitHub repository on a cron-driven
-schedule, in the layout consumed by upstream
+vanilla stats (`world/players/stats/*.json` on Paper 26.x) to a GitHub repository
+on a cron-driven schedule, in the layout consumed by upstream
 [Tickstats](https://github.com/Skycryck/tickstats)' `generate.py`.
 
 The plugin authenticates with a GitHub Personal Access Token (PAT), maintains a

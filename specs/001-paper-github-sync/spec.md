@@ -245,7 +245,8 @@ operator convenience, especially for PAT rotation and cadence tuning.
 **File production (Tickstats producer contract)**
 
 - **FR-005**: System MUST read player stats files from the source path (default
-  `world/stats`) as read-only.
+  `world/players/stats` on Paper 26.x; configurable for forks with the legacy
+  `world/stats` layout) as read-only.
 - **FR-006**: System MUST write each stats file verbatim to
   `stats/<server-name>/data/<uuid>.json` at the root of the target repository. The
   target path inside the repository is fixed by Tickstats convention and is NOT
@@ -295,7 +296,7 @@ operator convenience, especially for PAT rotation and cadence tuning.
   `github.commit-author-name`,
   `github.commit-author-email`,
   `server.name`,
-  `server.stats-path` (default `world/stats`),
+  `server.stats-path` (default `world/players/stats` on Paper 26.x),
   `sync.cron`,
   `sync.timezone` (default `Europe/Paris`),
   `sync.sync-on-startup` (default `false`),

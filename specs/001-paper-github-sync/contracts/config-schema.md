@@ -69,10 +69,13 @@ server:
   # Allowed characters: A-Z, a-z, 0-9, dot, underscore, hyphen. Max 64 chars.
   name: "my-server"
 
-  # Path to the vanilla stats directory. Relative to the Minecraft server's
-  # working directory. Override this if your world uses a non-default folder
-  # name (e.g. "custom-world/stats").
-  stats-path: "world/stats"
+  # Path to the vanilla stats directory, relative to the Minecraft server's
+  # working directory. On Paper 26.x this is "world/players/stats" — each file
+  # is named "<player-uuid>.json".
+  # Override this if your world uses a non-default folder name (e.g.
+  # "custom-world/players/stats") or if you run on a fork that kept the legacy
+  # "world/stats" location.
+  stats-path: "world/players/stats"
 
 sync:
   # Standard 5-field Unix cron expression. Evaluated against the timezone
@@ -114,7 +117,7 @@ retry:
 | `github.commit-author-name` | string | **yes** | — | Non-empty |
 | `github.commit-author-email` | string | **yes** | — | Matches minimal `.+@.+` |
 | `server.name` | string | **yes** | — | `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` |
-| `server.stats-path` | string | no | `world/stats` | Resolved path must exist, be a directory, be readable |
+| `server.stats-path` | string | no | `world/players/stats` | Resolved path must exist, be a directory, be readable |
 | `sync.cron` | string | **yes** | `0 */6 * * *` | Parses under `CronType.UNIX` |
 | `sync.timezone` | string | no | `Europe/Paris` | Valid `ZoneId` |
 | `sync.sync-on-startup` | boolean | no | `false` | — |
