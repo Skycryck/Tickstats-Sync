@@ -108,8 +108,15 @@ public class SyncOrchestrator {
                     gitService.fetchAndResetToRemote();
                     remoteEverTouched = true;
 
-                    // US2 (T037) will insert snapshot writing here when
-                    // cfg.snapshotsEnabled() is true and no directory for today exists.
+                    // US2 (T037): first-write-wins snapshot branch per research §R5.
+                    // syncDate is frozen at cycle start, so a midnight crossing mid-
+                    // cycle cannot promote this write to the next day.
+                    if (cfg.snapshotsEnabled()) {
+                        LocalDate today = syncDate.toLocalDate();
+                        if (!gitService.hasSnapshotDirectory(today)) {
+                            gitService.writeSnapshot(today, files);
+                        }
+                    }
 
                     gitService.writeFiles(files);
 

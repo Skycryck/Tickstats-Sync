@@ -189,6 +189,19 @@ public class GitService {
         }
     }
 
+    /**
+     * First-write-wins detection per research §R5. Returns true iff the working
+     * copy (which is up-to-date with remote after {@link #fetchAndResetToRemote()})
+     * already contains {@code stats/<server>/snapshots/<today>/}.
+     */
+    public boolean hasSnapshotDirectory(LocalDate today) {
+        Path snapshotDir = workdir.resolve("stats")
+                .resolve(config.serverName())
+                .resolve("snapshots")
+                .resolve(today.toString());
+        return Files.isDirectory(snapshotDir);
+    }
+
     public void writeSnapshot(LocalDate today, Map<UUID, byte[]> data) throws GitOperationException {
         Path snapshotDir = workdir.resolve("stats")
                 .resolve(config.serverName())

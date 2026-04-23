@@ -172,6 +172,94 @@ final class SyncOrchestratorTest {
         assertThat(h.metrics.lastFailureCategory()).isEqualTo(FailureCategory.IO);
     }
 
+    // ---------------------------------------------------- US2 — daily snapshots
+
+    @Test
+    void firstCycleOfDayWritesSnapshotUnderTodayDateInConfigTimezone() {
+        // 2026-04-22T12:00:00Z = 14:00 Europe/Paris → local date 2026-04-22.
+        Harness h = new Harness();
+        h.git.hasSnapshotDirectoryFor = today -> false;
+        h.git.hasChanges = () -> true;
+        h.git.commitAndPush = () -> "abc1234";
+
+        h.runOnce(SyncOrchestrator.Trigger.SCHEDULED);
+
+        assertThat(h.git.snapshotWrites).hasSize(1);
+        assertThat(h.git.snapshotWrites.get(0).date())
+                .isEqualTo(java.time.LocalDate.of(2026, 4, 22));
+        // Byte-for-byte: StatsSnapshot defensively clones the arrays, so the map
+        // reference differs, but content must be identical.
+        Map<UUID, byte[]> delivered = h.git.snapshotWrites.get(0).data();
+        assertThat(delivered.keySet()).isEqualTo(h.statsReader.fileMap.keySet());
+        for (UUID uuid : delivered.keySet()) {
+            assertThat(delivered.get(uuid)).isEqualTo(h.statsReader.fileMap.get(uuid));
+        }
+    }
+
+    @Test
+    void secondCycleSameDayWhenSnapshotDirExistsSkipsWriteSnapshot() {
+        Harness h = new Harness();
+        h.git.hasSnapshotDirectoryFor = today -> true;  // day already has a snapshot
+        h.git.hasChanges = () -> true;
+        h.git.commitAndPush = () -> "abc1234";
+
+        h.runOnce(SyncOrchestrator.Trigger.SCHEDULED);
+
+        assertThat(h.git.snapshotWrites).isEmpty();
+    }
+
+    @Test
+    void snapshotsDisabledInConfigSuppressesSnapshotWriteEvenOnFirstCycle() {
+        Harness h = new Harness(false);  // snapshotsEnabled=false
+        h.git.hasSnapshotDirectoryFor = today -> false;
+        h.git.hasChanges = () -> true;
+        h.git.commitAndPush = () -> "abc1234";
+
+        h.runOnce(SyncOrchestrator.Trigger.SCHEDULED);
+
+        assertThat(h.git.snapshotWrites).isEmpty();
+    }
+
+    @Test
+    void syncDateFrozenAtCycleStartSurvivesMidnightCrossingMidCycle() {
+        // Europe/Paris midnight is 23:00Z (CET winter) or 22:00Z (CEST summer).
+        // Start 30s before midnight Paris (CET) on 2026-01-15 → local 23:59:30.
+        Harness h = new Harness();
+        h.clock.setInstant(Instant.parse("2026-01-15T22:59:30Z"));
+        h.git.hasSnapshotDirectoryFor = today -> false;
+        // Advance the clock past midnight during fetchAndReset.
+        h.git.fetchAndResetAction = () -> {
+            h.clock.advance(Duration.ofMinutes(5));  // now it's 2026-01-16 local
+        };
+        h.git.hasChanges = () -> true;
+        h.git.commitAndPush = () -> "a1b2c3d";
+
+        h.runOnce(SyncOrchestrator.Trigger.SCHEDULED);
+
+        // syncDate was captured BEFORE the fake's fetch-action ran → still 2026-01-15.
+        assertThat(h.git.snapshotWrites).hasSize(1);
+        assertThat(h.git.snapshotWrites.get(0).date())
+                .as("syncDate is frozen at cycle start; midnight crossings do not promote the folder")
+                .isEqualTo(java.time.LocalDate.of(2026, 1, 15));
+    }
+
+    @Test
+    void dstSpringForwardProducesCorrectLocalDate() {
+        // Europe/Paris DST spring-forward 2026: Sunday March 29 at 02:00 → 03:00 CEST.
+        // Start at 00:30Z on March 29, which is 01:30 CET (before the skip) → local date 2026-03-29.
+        Harness h = new Harness();
+        h.clock.setInstant(Instant.parse("2026-03-29T00:30:00Z"));
+        h.git.hasSnapshotDirectoryFor = today -> false;
+        h.git.hasChanges = () -> true;
+        h.git.commitAndPush = () -> "d5tsave";
+
+        h.runOnce(SyncOrchestrator.Trigger.SCHEDULED);
+
+        assertThat(h.git.snapshotWrites).hasSize(1);
+        assertThat(h.git.snapshotWrites.get(0).date())
+                .isEqualTo(java.time.LocalDate.of(2026, 3, 29));
+    }
+
     // --------------------------------------------------------------------- harness
 
     /**
@@ -181,9 +269,9 @@ final class SyncOrchestratorTest {
     private static final class Harness {
         final FakeStatsReader statsReader = new FakeStatsReader();
         final FakeGitService git = new FakeGitService();
-        final SyncLock lock = new SyncLock(Clock.fixed(Instant.EPOCH, ZoneId.of("UTC")));
+        final MutableClock clock = new MutableClock(Instant.parse("2026-04-22T12:00:00Z"));
+        final SyncLock lock = new SyncLock(clock);
         final SyncMetrics metrics = new SyncMetrics();
-        final Clock clock = Clock.fixed(Instant.parse("2026-04-22T12:00:00Z"), ZoneId.of("UTC"));
         final RecordingSleeper sleeper = new RecordingSleeper();
         final Logger logger = Logger.getLogger("SyncOrchestratorTest-" + System.nanoTime());
         final ConfigService configService;
@@ -192,6 +280,10 @@ final class SyncOrchestratorTest {
         final SyncOrchestrator orchestrator;
 
         Harness() {
+            this(true);
+        }
+
+        Harness(boolean snapshotsEnabled) {
             // Wire config: a live TickstatsSyncConfig with sensible defaults.
             TickstatsSyncConfig cfg = new TickstatsSyncConfig(
                     "owner/repo-name",
@@ -204,7 +296,7 @@ final class SyncOrchestratorTest {
                     "0 */6 * * *",
                     ZoneId.of("Europe/Paris"),
                     false,
-                    true,
+                    snapshotsEnabled,
                     3,
                     Duration.ofSeconds(10));
             this.configService = new StaticConfigService(cfg);
@@ -261,6 +353,9 @@ final class SyncOrchestratorTest {
         java.util.function.Consumer<Map<UUID, byte[]>> writeFilesAction = data -> {};
         Supplier<Boolean> hasChanges = () -> false;
         Supplier<String> commitAndPush = () -> "0000000";
+        java.util.function.Function<java.time.LocalDate, Boolean> hasSnapshotDirectoryFor =
+                d -> true;  // default to "already exists" so older tests don't accidentally write
+        final List<SnapshotWrite> snapshotWrites = new ArrayList<>();
 
         FakeGitService() {
             super(dummyConfig(), Path.of("."));
@@ -286,6 +381,14 @@ final class SyncOrchestratorTest {
         @Override public String commitAndPush(String a, String e, String m) {
             return commitAndPush.get();
         }
+        @Override public boolean hasSnapshotDirectory(java.time.LocalDate today) {
+            return hasSnapshotDirectoryFor.apply(today);
+        }
+        @Override public void writeSnapshot(java.time.LocalDate today, Map<UUID, byte[]> data) {
+            snapshotWrites.add(new SnapshotWrite(today, data));
+        }
+
+        record SnapshotWrite(java.time.LocalDate date, Map<UUID, byte[]> data) {}
     }
 
     @FunctionalInterface
@@ -298,6 +401,17 @@ final class SyncOrchestratorTest {
         @Override public void sleep(Duration duration) {
             sleeps.add(duration);
         }
+    }
+
+    /** Test clock whose {@code instant()} can be mutated mid-test. */
+    private static final class MutableClock extends Clock {
+        private Instant now;
+        MutableClock(Instant start) { this.now = start; }
+        void setInstant(Instant i) { this.now = i; }
+        void advance(Duration d) { this.now = now.plus(d); }
+        @Override public ZoneId getZone() { return java.time.ZoneOffset.UTC; }
+        @Override public Clock withZone(ZoneId z) { return this; }
+        @Override public Instant instant() { return now; }
     }
 
     /** ConfigService that always returns the same preset config (no YAML involved). */

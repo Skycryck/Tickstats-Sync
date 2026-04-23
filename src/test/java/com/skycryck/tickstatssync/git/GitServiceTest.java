@@ -340,18 +340,49 @@ final class GitServiceTest {
         Files.walkFileTree(path, new SimpleFileVisitor<Path>() {
             @Override public FileVisitResult visitFile(Path file, BasicFileAttributes attrs)
                     throws IOException {
-                try {
-                    Files.delete(file);
-                } catch (java.nio.file.AccessDeniedException ex) {
-                    // Windows: JGit leaves .pack files read-only.
-                    file.toFile().setWritable(true);
-                    Files.delete(file);
-                }
+                tryDeleteWithRetry(file);
                 return FileVisitResult.CONTINUE;
             }
             @Override public FileVisitResult postVisitDirectory(Path dir, IOException exc)
-                    throws IOException { Files.delete(dir); return FileVisitResult.CONTINUE; }
+                    throws IOException {
+                tryDeleteWithRetry(dir);
+                return FileVisitResult.CONTINUE;
+            }
         });
+    }
+
+    /**
+     * On Windows JGit sometimes holds brief handles on pack files after Git.close().
+     * Retry a few times, then fall through — @TempDir's own cleanup will catch the
+     * remainder at the end of the test.
+     */
+    private static void tryDeleteWithRetry(Path p) throws IOException {
+        IOException last = null;
+        for (int i = 0; i < 5; i++) {
+            try {
+                Files.delete(p);
+                return;
+            } catch (java.nio.file.AccessDeniedException ex) {
+                p.toFile().setWritable(true);
+                last = ex;
+            } catch (java.nio.file.FileSystemException ex) {
+                last = ex;
+            } catch (IOException ex) {
+                last = ex;
+            }
+            try {
+                Thread.sleep(20);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        // Don't propagate — let @TempDir cleanup absorb the failure if any.
+        if (last != null && Files.exists(p)) {
+            // Last resort: mark for deletion on JVM exit so the @TempDir cleanup
+            // has a cleaner slate on the next test.
+            p.toFile().deleteOnExit();
+        }
     }
 
     /**
