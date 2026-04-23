@@ -52,7 +52,8 @@ public final class TickstatsSyncPlugin extends JavaPlugin {
         } catch (RuntimeException ex) {
             this.activeConfig = null;
             metrics.setConfigInvalidReason(ex.getMessage());
-            pluginLogger.warning("[TickstatsSync] config invalid: " + ex.getMessage());
+            // Paper already prefixes "[TickstatsSync]" to plugin-logger records; don't double it.
+            pluginLogger.warning("config invalid: " + ex.getMessage());
         }
 
         // Step 6: Seed PatMasker only when config is healthy.

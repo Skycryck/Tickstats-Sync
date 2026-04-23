@@ -28,6 +28,14 @@ dependencies {
     implementation("org.eclipse.jgit:org.eclipse.jgit.http.apache:6.10.1.202505221210-r")
     implementation("com.cronutils:cron-utils:9.2.1")
 
+    // JGit uses SLF4J; provide a NOP binding so it doesn't print "No SLF4J providers
+    // were found" to System.err at class-init (which triggers Paper's author nag).
+    // NOP is also the safest choice for credential safety: JGit emits nothing, so
+    // there is no code path that could leak the PAT through SLF4J. If operators
+    // later need JGit debug output, swap this for slf4j-jdk14 and install
+    // LogRedactionFilter on the shaded JGit package's JUL logger node.
+    implementation("org.slf4j:slf4j-nop:2.0.13")
+
     testImplementation("io.papermc.paper:paper-api:26.1.2.build.19-alpha")
     testImplementation(platform("org.junit:junit-bom:5.11.3"))
     testImplementation("org.junit.jupiter:junit-jupiter")
@@ -48,6 +56,10 @@ tasks.test {
 
 tasks.shadowJar {
     archiveClassifier.set("")
+
+    // Merge META-INF/services and relocate both file names and contents so the
+    // shaded slf4j-nop provider is discoverable under the relocated SLF4J package.
+    mergeServiceFiles()
 
     val shaded = "com.skycryck.tickstatssync.shaded"
     relocate("org.eclipse.jgit", "$shaded.jgit")
