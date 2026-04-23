@@ -189,6 +189,8 @@ public class SyncOrchestrator {
         metrics.setLastAttempts(attempts);
         metrics.setLastFailureCategory(null);
         metrics.setLastReachability(SyncMetrics.Reachability.OK);
+        metrics.setLastDurationMs(durationMs);
+        metrics.setLastCommitSha(commitSha);  // null for SUCCESS_NO_CHANGES — /tickstats status handles that
         if (outcome == SyncOutcome.SUCCESS_WITH_COMMIT) {
             metrics.setLastSuccessAt(clock.instant());
         } else {
@@ -212,6 +214,8 @@ public class SyncOrchestrator {
         metrics.setLastTrigger(trigger);
         metrics.setLastAttempts(attempts);
         metrics.setLastFailureCategory(category);
+        metrics.setLastDurationMs(durationMs);
+        metrics.setLastCommitSha(null);
         updateReachabilityOnFailure(category, remoteEverTouched);
         emitLogLine(SyncOutcome.FAILURE, trigger, files, null, durationMs, category, attempts);
         if (cause != null) {

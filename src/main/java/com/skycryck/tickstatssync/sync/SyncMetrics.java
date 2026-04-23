@@ -2,6 +2,7 @@ package com.skycryck.tickstatssync.sync;
 
 import java.time.Instant;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 public final class SyncMetrics {
@@ -22,6 +23,8 @@ public final class SyncMetrics {
     private final AtomicInteger lastAttempts = new AtomicInteger(0);
     private final AtomicReference<SyncOrchestrator.Trigger> lastTrigger = new AtomicReference<>();
     private final AtomicReference<String> configInvalidReason = new AtomicReference<>();
+    private final AtomicReference<String> lastCommitSha = new AtomicReference<>();
+    private final AtomicLong lastDurationMs = new AtomicLong(0L);
 
     public Instant lastSuccessAt() {
         return lastSuccessAt.get();
@@ -93,5 +96,21 @@ public final class SyncMetrics {
 
     public void setConfigInvalidReason(String reason) {
         configInvalidReason.set(reason);
+    }
+
+    public String lastCommitSha() {
+        return lastCommitSha.get();
+    }
+
+    public void setLastCommitSha(String sha) {
+        lastCommitSha.set(sha);
+    }
+
+    public long lastDurationMs() {
+        return lastDurationMs.get();
+    }
+
+    public void setLastDurationMs(long durationMs) {
+        lastDurationMs.set(durationMs);
     }
 }

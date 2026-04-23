@@ -40,6 +40,16 @@ public class ConfigService {
         this.envTokenSupplier = envTokenSupplier;
     }
 
+    /**
+     * Reads {@code config.yml}, validates every key, and returns an immutable
+     * {@link TickstatsSyncConfig}. Does NOT mutate the active-config reference —
+     * callers MUST call {@link #swap(TickstatsSyncConfig)} to make the returned
+     * record visible to {@link #current()}. The separation is load-bearing for the
+     * hot-reload ordering (research §R13): the PAT masker MUST be updated before
+     * the active config swap, so a caller that validates-then-swaps in one call
+     * would leak the new token through any background thread that logs between
+     * those two instants.
+     */
     public TickstatsSyncConfig load() {
         FileConfiguration raw = configSupplier.get();
 
@@ -117,7 +127,7 @@ public class ConfigService {
         }
         Duration initialBackoff = Duration.ofSeconds(backoffSeconds);
 
-        TickstatsSyncConfig config = new TickstatsSyncConfig(
+        return new TickstatsSyncConfig(
                 ownerAndRepo,
                 branch,
                 resolvedToken,
@@ -131,9 +141,6 @@ public class ConfigService {
                 snapshotsEnabled,
                 maxAttempts,
                 initialBackoff);
-
-        active.set(config);
-        return config;
     }
 
     public TickstatsSyncConfig current() {

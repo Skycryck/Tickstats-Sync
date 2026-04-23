@@ -53,6 +53,7 @@ public final class TickstatsSyncPlugin extends JavaPlugin {
         this.configService = new ConfigService(this::getConfig, serverDirectory);
         try {
             this.activeConfig = configService.load();
+            configService.swap(activeConfig);
         } catch (RuntimeException ex) {
             this.activeConfig = null;
             metrics.setConfigInvalidReason(ex.getMessage());

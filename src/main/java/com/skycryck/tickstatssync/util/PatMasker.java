@@ -1,6 +1,6 @@
 package com.skycryck.tickstatssync.util;
 
-public final class PatMasker {
+public class PatMasker {
 
     private volatile String currentToken;
 
