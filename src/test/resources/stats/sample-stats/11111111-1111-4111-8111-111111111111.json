@@ -1,0 +1,18 @@
+{
+  "stats": {
+    "minecraft:custom": {
+      "minecraft:play_time": 1234567,
+      "minecraft:walk_one_cm": 98765
+    },
+    "minecraft:mined": {
+      "minecraft:stone": 42
+    }
+  },
+  "advancements": {
+    "minecraft:story/root": {
+      "criteria": {},
+      "done": true
+    }
+  },
+  "DataVersion": 3839
+}

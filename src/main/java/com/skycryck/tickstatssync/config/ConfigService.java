@@ -13,7 +13,7 @@ import java.util.function.Supplier;
 import java.util.regex.Pattern;
 import org.bukkit.configuration.file.FileConfiguration;
 
-public final class ConfigService {
+public class ConfigService {
 
     private static final Pattern OWNER_REPO_PATTERN =
             Pattern.compile("^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$");

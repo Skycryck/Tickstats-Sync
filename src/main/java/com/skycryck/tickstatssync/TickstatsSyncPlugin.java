@@ -13,10 +13,12 @@ import com.skycryck.tickstatssync.util.LogRedactionFilter;
 import com.skycryck.tickstatssync.util.PatMasker;
 import java.nio.file.Path;
 import java.time.Clock;
+import java.util.logging.Level;
 import java.util.logging.Logger;
+import org.bukkit.Bukkit;
+import org.bukkit.plugin.java.JavaPlugin;
 import org.eclipse.jgit.transport.HttpTransport;
 import org.eclipse.jgit.transport.http.apache.HttpClientConnectionFactory;
-import org.bukkit.plugin.java.JavaPlugin;
 
 public final class TickstatsSyncPlugin extends JavaPlugin {
 
@@ -25,6 +27,7 @@ public final class TickstatsSyncPlugin extends JavaPlugin {
     private SyncLock syncLock;
     private ConfigService configService;
     private CronScheduler cronScheduler;
+    private SyncOrchestrator orchestrator;
     private TickstatsSyncConfig activeConfig;
 
     @Override
@@ -46,7 +49,8 @@ public final class TickstatsSyncPlugin extends JavaPlugin {
 
         // Step 5: ConfigService.load() — may fail; never return early.
         saveDefaultConfig();
-        this.configService = new ConfigService(this::getConfig, getDataFolder().toPath().getParent().getParent());
+        Path serverDirectory = Bukkit.getServer().getWorldContainer().toPath().toAbsolutePath();
+        this.configService = new ConfigService(this::getConfig, serverDirectory);
         try {
             this.activeConfig = configService.load();
         } catch (RuntimeException ex) {
@@ -61,13 +65,14 @@ public final class TickstatsSyncPlugin extends JavaPlugin {
             patMasker.setToken(activeConfig.token());
         }
 
-        // Step 7: Instantiate remaining services via the Foundational stubs. They never
-        // run their method bodies before US1 lands; holding references is a no-op.
+        // Step 7: Instantiate remaining services. In inert mode GitService holds a
+        // null config and is never invoked; the scheduler is constructed but not started.
         Path workdir = getDataFolder().toPath().resolve("workdir");
-        StatsReader statsReader = new StatsReader();
+        StatsReader statsReader = new StatsReader(Clock.systemUTC(), pluginLogger);
         GitService gitService = new GitService(activeConfig, workdir);
-        SyncOrchestrator orchestrator = new SyncOrchestrator(
-                configService, statsReader, gitService, syncLock, metrics, Clock.systemUTC(), pluginLogger);
+        this.orchestrator = new SyncOrchestrator(
+                configService, statsReader, gitService, syncLock, metrics,
+                Clock.systemUTC(), pluginLogger);
         this.cronScheduler = new CronScheduler(
                 this, configService, orchestrator, metrics, syncLock, pluginLogger);
 
@@ -77,16 +82,44 @@ public final class TickstatsSyncPlugin extends JavaPlugin {
                 configService, syncLock, metrics, orchestrator, cronScheduler, patMasker, this);
         command.register(getLifecycleManager());
 
+        if (activeConfig == null) {
+            pluginLogger.info("Plugin loaded in inert mode. Edit plugins/TickstatsSync/config.yml "
+                    + "and run /tickstats reload to activate.");
+            return;
+        }
+
         // Step 9 (healthy mode only): start the cron scheduler.
-        //   TODO(US1 T035): once CronScheduler.start is implemented, call cronScheduler.start() here.
-        // Step 10 (healthy + syncOnStartup): fire an immediate sync.
-        //   TODO(US1 T035): once SyncOrchestrator.runOnce is implemented, submit
-        //     Bukkit.getScheduler().runTaskAsynchronously(this, () -> orchestrator.runOnce(Trigger.STARTUP))
-        //     when activeConfig != null && activeConfig.syncOnStartup() && syncLock.tryAcquire().
+        try {
+            cronScheduler.start();
+            pluginLogger.info("Cron scheduler armed for expression '"
+                    + activeConfig.cronExpression() + "' in zone " + activeConfig.timezone());
+        } catch (RuntimeException ex) {
+            pluginLogger.log(Level.SEVERE,
+                    "Failed to arm cron scheduler; entering inert mode", ex);
+            metrics.setConfigInvalidReason("scheduler failed to arm: " + ex.getMessage());
+            return;
+        }
+
+        // Step 10 (healthy + syncOnStartup): fire an immediate sync off the main thread.
+        if (activeConfig.syncOnStartup() && syncLock.tryAcquire()) {
+            Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
+                try {
+                    orchestrator.runOnce(SyncOrchestrator.Trigger.STARTUP);
+                } catch (Throwable t) {
+                    pluginLogger.log(Level.SEVERE, "Startup sync threw unexpectedly", t);
+                }
+            });
+        }
     }
 
     @Override
     public void onDisable() {
-        // TODO(US1 T035): cronScheduler.stop() once the scheduler is live.
+        if (cronScheduler != null) {
+            try {
+                cronScheduler.stop();
+            } catch (RuntimeException ignored) {
+                // best-effort
+            }
+        }
     }
 }
