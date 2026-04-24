@@ -46,3 +46,8 @@ config.yml
 # ---- Spec-kit ----
 .specify/.cache/
 .specify/tmp/
+
+# ---- Claude Code ----
+# Per-session worktrees Claude Code creates at runtime under this folder.
+# They are not project artifacts and must never be versioned.
+.claude/worktrees/
