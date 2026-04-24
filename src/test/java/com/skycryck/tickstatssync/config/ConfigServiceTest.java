@@ -9,6 +9,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.ZoneId;
+import org.bukkit.configuration.InvalidConfigurationException;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -94,6 +95,32 @@ final class ConfigServiceTest {
         ConfigService service = new ConfigService(() -> raw, serverDir, () -> null);
         assertThatThrownBy(service::load)
                 .hasMessageContaining("no GitHub token supplied");
+    }
+
+    // T044 — validates the planning assumption (plan.md §Assumptions): Paper 26.x
+    // bundles SnakeYAML 2.x, which uses SafeConstructor by default and refuses
+    // non-safe tags such as !!java.net.URL. If Paper ever regresses to a permissive
+    // constructor, this test fails at build time before any operator deploys the
+    // broken runtime. We assert on the outer InvalidConfigurationException thrown
+    // by Bukkit's YamlConfiguration wrapper — the inner SnakeYAML exception shape
+    // varies across minor versions, but the Bukkit contract is stable.
+    @Test
+    void maliciousYamlTagIsRefusedBySnakeYaml() throws IOException {
+        String yaml = loadFixtureText("invalid-malicious-yaml.yml");
+        YamlConfiguration cfg = new YamlConfiguration();
+
+        assertThatThrownBy(() -> cfg.loadFromString(yaml))
+                .as("SnakeYAML 2.x via Paper must refuse arbitrary Java type tags")
+                .isInstanceOf(InvalidConfigurationException.class);
+    }
+
+    private String loadFixtureText(String fixtureName) throws IOException {
+        try (InputStream in = getClass().getResourceAsStream("/config/" + fixtureName)) {
+            if (in == null) {
+                throw new IllegalStateException("fixture not found: " + fixtureName);
+            }
+            return new String(in.readAllBytes());
+        }
     }
 
     private YamlConfiguration loadFixture(String fixtureName, Path statsDir) throws IOException {

