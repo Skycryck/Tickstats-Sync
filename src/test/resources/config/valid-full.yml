@@ -1,0 +1,20 @@
+github:
+  repo: "skycryck/tickstats-data"
+  branch: "main"
+  token: "ghp_fullPlaceholderTokenValue0987654321abcdef"
+  commit-author-name: "TickstatsSync Bot"
+  commit-author-email: "tickstatssync@example.com"
+
+server:
+  name: "my-server"
+  stats-path: "@STATS_PATH@"
+
+sync:
+  cron: "0 8,14,22 * * *"
+  timezone: "Europe/Paris"
+  sync-on-startup: false
+  snapshots-enabled: true
+
+retry:
+  max-attempts: 3
+  initial-backoff-seconds: 10

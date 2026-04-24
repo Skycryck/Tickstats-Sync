@@ -1,0 +1,89 @@
+# =============================================================================
+# TickstatsSync - configuration file
+# =============================================================================
+# This file contains a GitHub Personal Access Token (PAT). Keep it secret:
+#
+#   - If your Minecraft server directory is under version control, add this
+#     file (or its parent folder) to .gitignore.
+#   - Rotate the token periodically and after every suspected leak.
+#
+# Supported token types:
+#
+#   1. Fine-grained PAT (recommended)
+#      Scope: "Contents: Read and write" on the target repository only.
+#      Setup: https://github.com/settings/personal-access-tokens/new
+#
+#   2. Classic PAT (fallback - use only if fine-grained is unavailable, e.g.
+#      on GitHub Enterprise Server builds or organizations without fine-grained
+#      PAT support)
+#      Scope: `repo`.
+#      IMPORTANT: classic PATs with the `repo` scope grant access to EVERY
+#      repository the issuing user can see - there is no per-repo scoping.
+#      Create a dedicated machine/bot GitHub account, invite it to the target
+#      repository as a collaborator with the Write role (NOT Admin - Write
+#      is sufficient for pushes and commits), then generate the classic PAT
+#      from that bot account. Never use a classic PAT minted from your
+#      personal user account for production syncs.
+#
+# For automated deployments (systemd, Docker, Pterodactyl), leave
+# github.token empty below and export the PAT through the environment variable
+# TICKSTATSSYNC_GITHUB_TOKEN. The plugin reads it automatically.
+# =============================================================================
+
+github:
+  # Target repository in "owner/name" form. Required.
+  repo: "owner/repo-name"
+
+  # Target branch. Default: main.
+  branch: "main"
+
+  # PAT. Leave empty to source from the environment variable
+  # TICKSTATSSYNC_GITHUB_TOKEN. One of the two MUST be set.
+  token: ""
+
+  # Identity used for git commits. Shown in the target repository's history.
+  commit-author-name: "TickstatsSync Bot"
+  commit-author-email: "tickstatssync@example.com"
+
+server:
+  # Short identifier used as the first path segment under stats/ in the target
+  # repository: stats/<server.name>/data/... and stats/<server.name>/snapshots/...
+  # Allowed characters: A-Z, a-z, 0-9, dot, underscore, hyphen. Max 64 chars.
+  name: "my-server"
+
+  # Path to the vanilla stats directory, relative to the Minecraft server's
+  # working directory. On Paper 26.x this is "world/players/stats" — each file
+  # is named "<player-uuid>.json".
+  # Override this if your world uses a non-default folder name (e.g.
+  # "custom-world/players/stats") or if you run on a fork that kept the legacy
+  # "world/stats" location.
+  stats-path: "world/players/stats"
+
+sync:
+  # Standard 5-field Unix cron expression. Evaluated against the timezone
+  # below. Examples:
+  #   "0 */6 * * *"      every 6 hours, on the hour
+  #   "0 8,14,22 * * *"  at 08:00, 14:00, and 22:00
+  #   "*/15 * * * *"     every 15 minutes
+  cron: "0 */6 * * *"
+
+  # IANA timezone for cron evaluation and snapshot date naming.
+  timezone: "Europe/Paris"
+
+  # Trigger one sync at plugin startup. Default: false - avoids a surprise
+  # push if you start the server with a half-finished config.
+  sync-on-startup: false
+
+  # Write one snapshot per calendar day into stats/<server-name>/snapshots/
+  # YYYY-MM-DD/. First sync of the day wins; subsequent syncs the same day
+  # leave the directory untouched.
+  snapshots-enabled: true
+
+retry:
+  # Number of attempts per sync cycle before giving up until the next
+  # scheduled tick. Range: 1..10.
+  max-attempts: 3
+
+  # Initial backoff between attempts, in seconds. Doubles each attempt.
+  # Range: 1..300.
+  initial-backoff-seconds: 10
